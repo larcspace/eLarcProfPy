@@ -22,6 +22,16 @@ CREATE TABLE IF NOT EXISTS sync_cursor (
     table_name TEXT    PRIMARY KEY,
     max_rev    INTEGER NOT NULL DEFAULT 0
 );
+
+CREATE TABLE IF NOT EXISTS module_config (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    annee_scolaire TEXT NOT NULL,
+    trimestre_courant INTEGER NOT NULL,
+    nom_professeur TEXT NOT NULL,
+    email_professeur TEXT NOT NULL,
+    date_creation_module TEXT NOT NULL DEFAULT (datetime('now')),
+    derniere_synchronisation TEXT NOT NULL DEFAULT (datetime('now'))
+);
 """
 
 
@@ -60,6 +70,28 @@ class SQLiteInit:
             (result.user_id, result.email, result.full_name,
              result.role.value, result.term_id, result.term_label, pin_hash)
         )
+        conn.commit()
+
+    def init_module_config(self, annee_scolaire: str,
+                           trimestre_courant: int,
+                           nom_professeur: str,
+                           email_professeur: str) -> None:
+        """Insère ou met à jour la ligne unique de module_config."""
+        conn = db.local_conn
+        if conn is None:
+            return
+        conn.execute('''
+            INSERT INTO module_config (id, annee_scolaire, trimestre_courant,
+                                       nom_professeur, email_professeur,
+                                       date_creation_module, derniere_synchronisation)
+            VALUES (1, ?, ?, ?, ?, datetime('now'), datetime('now'))
+            ON CONFLICT(id) DO UPDATE SET
+                annee_scolaire = excluded.annee_scolaire,
+                trimestre_courant = excluded.trimestre_courant,
+                nom_professeur = excluded.nom_professeur,
+                email_professeur = excluded.email_professeur,
+                derniere_synchronisation = excluded.derniere_synchronisation
+        ''', (annee_scolaire, trimestre_courant, nom_professeur, email_professeur))
         conn.commit()
 
     def read_cursor(self, table: str) -> int:

@@ -63,3 +63,4 @@ pip-log.txt
 *.spec
 *.manifest
 .ruff_cache/
+.aider*

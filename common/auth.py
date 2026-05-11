@@ -135,6 +135,66 @@ class AuthManager:
         except Exception as e:
             return False, AuthResult(), str(e)
 
+    @classmethod
+    def check_teacher_exists(cls, email: str) -> Tuple[bool, dict]:
+        """
+        Vérifie si l'email correspond à un professeur actif dans teachadm.
+        Retourne (True, infos) ou (False, {}).
+        """
+        conn = db.server_conn
+        if conn is None or db.mode != DBMode.INTRANET:
+            return False, {}
+
+        try:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT
+                        a.id,
+                        a.first_name,
+                        a.last_name,
+                        a.email,
+                        t.enabled
+                    FROM public.larcauth_aecuser a
+                    JOIN public.larcauth_teachadm t ON t.aecuser_ptr_id = a.id
+                    WHERE a.email = %s
+                      AND t.enabled = true
+                """, (email,))
+                row = cur.fetchone()
+                if row is None:
+                    return False, {}
+
+                # Récupérer l'année scolaire et le trimestre en cours
+                cur.execute("""
+                    SELECT
+                        ay.label AS annee_scolaire,
+                        ay.current_term_number AS trimestre_courant,
+                        tm.label AS trimestre_label
+                    FROM public.larcauth_academicyear ay
+                    JOIN public.larcauth_term tm ON tm.trim = ay.current_term_number
+                    WHERE ay.current_term_number IS NOT NULL
+                    ORDER BY ay.start_date DESC
+                    LIMIT 1
+                """)
+                year_row = cur.fetchone()
+                if year_row is None:
+                    return False, {}
+
+                infos = {
+                    'user_id': row[0],
+                    'first_name': row[1],
+                    'last_name': row[2],
+                    'email': row[3],
+                    'enabled': row[4],
+                    'annee_scolaire': year_row[0],
+                    'trimestre_courant': year_row[1],
+                    'trimestre_label': year_row[2],
+                }
+                return True, infos
+
+        except Exception as e:
+            print(f"Erreur check_teacher_exists: {e}")
+            return False, {}
+
 
 # ---------------------------------------------------------------------------
 # OAuth2 PKCE — Google Workspace @arc-en-ciel.org

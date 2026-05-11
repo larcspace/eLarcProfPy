@@ -346,6 +346,27 @@ class LoginWindow(QMainWindow):
         if not ok:
             self._show_error(err or 'Authentification échouée.')
             return
+
+        # Vérifier que le professeur existe et est actif
+        if mode in (ConnMode.INTRANET, ConnMode.CLOUD):
+            exists, infos = AuthManager.check_teacher_exists(res.email)
+            if not exists:
+                self._show_error('Ce compte n\'est pas un professeur actif.')
+                return
+            # Mettre à jour les informations de session avec les données du serveur
+            res.user_id = infos['user_id']
+            res.full_name = f"{infos['first_name']} {infos['last_name']}"
+            res.term_id = infos['trimestre_courant']
+            res.term_label = infos['trimestre_label']
+
+            # Initialiser la table module_config avec les informations du professeur
+            sqlite_init.init_module_config(
+                annee_scolaire=infos['annee_scolaire'],
+                trimestre_courant=infos['trimestre_courant'],
+                nom_professeur=res.full_name,
+                email_professeur=res.email
+            )
+
         self._apply_session(res, mode)
 
     def _apply_session(self, res: AuthResult, mode: ConnMode) -> None:
