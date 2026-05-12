@@ -96,22 +96,30 @@ class SQLiteInit:
         ''', (annee_scolaire, trimestre_courant, nom_professeur, email_professeur))
         conn.commit()
 
-    def take_teacher_data(self, user_id: int, term_id: int) -> bool:
+    def take_teacher_data(self, user_id: int, term_id: int, log_fn=None, conn_sqlite=None) -> bool:
         """
-        Récupère les données du professeur depuis PostgreSQL (Intranet)
+        Récupère les données du professeur depuis PostgreSQL (Intranet ou Supabase)
         pour les 3 tables modifiables et les insère dans SQLite.
         Retourne True si réussi, False sinon.
+        log_fn : fonction optionnelle pour journaliser les messages.
+        conn_sqlite : connexion SQLite optionnelle (si None, utilise db.local_conn)
         """
         conn_pg = db.server_conn
-        conn_sqlite = db.local_conn
+        if conn_sqlite is None:
+            conn_sqlite = db.local_conn
         if conn_pg is None or conn_sqlite is None:
+            msg = "take_teacher_data: connexion serveur ou locale manquante"
+            print(msg)
+            if log_fn:
+                log_fn(msg)
             return False
 
         try:
             with conn_pg.cursor() as cur:
-                # 1. larcauth_evaluation
+                # Une seule requête avec UNION ALL pour les trois tables
+                # On ajoute une colonne factice _source pour distinguer les tables
                 cur.execute("""
-                    SELECT e.*
+                    SELECT 'evaluation' AS _source, e.*
                     FROM public.larcauth_evaluation e
                     JOIN public.larcauth_classroom_termsubject cts ON cts.id = e.fk_classroom_termsubject_id
                     JOIN public.larcauth_classroom c ON c.id = cts.fk_classroom_id
@@ -119,13 +127,10 @@ class SQLiteInit:
                       AND cts.fk_term_id = %s
                       AND cts.enabled = true
                       AND c.enabled = true
-                """, (user_id, term_id))
-                eval_rows = cur.fetchall()
-                eval_cols = [desc[0] for desc in cur.description]
 
-                # 2. larcauth_learnerpei_has_termsubjectpei
-                cur.execute("""
-                    SELECT pei.*
+                    UNION ALL
+
+                    SELECT 'pei' AS _source, pei.*
                     FROM public.larcauth_learnerpei_has_termsubjectpei pei
                     JOIN public.larcauth_learner_has_termsubject lht ON lht.id = pei.learner_has_termsubject_ptr_id
                     JOIN public.larcauth_classroom_termsubject cts ON cts.id = lht.fk_classroom_termsubject_id
@@ -136,13 +141,10 @@ class SQLiteInit:
                       AND cts.enabled = true
                       AND c.enabled = true
                       AND s.enabled = true
-                """, (user_id, term_id))
-                pei_rows = cur.fetchall()
-                pei_cols = [desc[0] for desc in cur.description]
 
-                # 3. larcauth_learnerdp_has_termsubjectdp
-                cur.execute("""
-                    SELECT dp.*
+                    UNION ALL
+
+                    SELECT 'dp' AS _source, dp.*
                     FROM public.larcauth_learnerdp_has_termsubjectdp dp
                     JOIN public.larcauth_learner_has_termsubject lht ON lht.id = dp.learner_has_termsubject_ptr_id
                     JOIN public.larcauth_classroom_termsubject cts ON cts.id = lht.fk_classroom_termsubject_id
@@ -153,34 +155,79 @@ class SQLiteInit:
                       AND cts.enabled = true
                       AND c.enabled = true
                       AND s.enabled = true
-                """, (user_id, term_id))
-                dp_rows = cur.fetchall()
-                dp_cols = [desc[0] for desc in cur.description]
+                """, (user_id, term_id, user_id, term_id, user_id, term_id))
+                all_rows = cur.fetchall()
+                all_cols = [desc[0] for desc in cur.description]  # inclut _source
 
-            # Insérer dans SQLite
+                # Séparer les lignes par table
+                eval_rows = []
+                pei_rows  = []
+                dp_rows   = []
+                for row in all_rows:
+                    source = row[0]  # _source
+                    data   = row[1:] # les colonnes réelles
+                    if source == 'evaluation':
+                        eval_rows.append(data)
+                    elif source == 'pei':
+                        pei_rows.append(data)
+                    elif source == 'dp':
+                        dp_rows.append(data)
+
+                # Les colonnes réelles (sans _source)
+                real_cols = all_cols[1:]
+                eval_cols = real_cols
+                pei_cols  = real_cols
+                dp_cols   = real_cols
+
+                if log_fn:
+                    log_fn(f"Requête unique : {len(eval_rows)} évaluations, {len(pei_rows)} PEI, {len(dp_rows)} DP")
+
+            # Insérer dans SQLite avec une transaction explicite
             cursor_sqlite = conn_sqlite.cursor()
             cursor_sqlite.execute("PRAGMA foreign_keys = OFF")
             try:
+                # Démarrer une transaction
+                cursor_sqlite.execute("BEGIN")
+
                 # Table larcauth_evaluation
                 self._create_table_from_data(cursor_sqlite, 'larcauth_evaluation', eval_cols)
+                cursor_sqlite.execute('DELETE FROM "larcauth_evaluation"')
                 self._insert_rows_from_data(cursor_sqlite, 'larcauth_evaluation', eval_cols, eval_rows)
+                if log_fn:
+                    log_fn("Table larcauth_evaluation mise à jour")
 
                 # Table larcauth_learnerpei_has_termsubjectpei
                 self._create_table_from_data(cursor_sqlite, 'larcauth_learnerpei_has_termsubjectpei', pei_cols)
+                cursor_sqlite.execute('DELETE FROM "larcauth_learnerpei_has_termsubjectpei"')
                 self._insert_rows_from_data(cursor_sqlite, 'larcauth_learnerpei_has_termsubjectpei', pei_cols, pei_rows)
+                if log_fn:
+                    log_fn("Table larcauth_learnerpei_has_termsubjectpei mise à jour")
 
                 # Table larcauth_learnerdp_has_termsubjectdp
                 self._create_table_from_data(cursor_sqlite, 'larcauth_learnerdp_has_termsubjectdp', dp_cols)
+                cursor_sqlite.execute('DELETE FROM "larcauth_learnerdp_has_termsubjectdp"')
                 self._insert_rows_from_data(cursor_sqlite, 'larcauth_learnerdp_has_termsubjectdp', dp_cols, dp_rows)
+                if log_fn:
+                    log_fn("Table larcauth_learnerdp_has_termsubjectdp mise à jour")
 
                 conn_sqlite.commit()
+            except Exception:
+                conn_sqlite.rollback()
+                raise
             finally:
                 cursor_sqlite.execute("PRAGMA foreign_keys = ON")
 
+            msg = f"take_teacher_data: {len(eval_rows)} évaluations, {len(pei_rows)} PEI, {len(dp_rows)} DP téléchargés"
+            print(msg)
+            if log_fn:
+                log_fn(msg)
             return True
 
         except Exception as e:
-            print(f"Erreur take_teacher_data: {e}")
+            msg = f"Erreur take_teacher_data: {e}"
+            print(msg)
+            if log_fn:
+                log_fn(msg)
             return False
 
     def _create_table_from_data(self, cursor, table_name: str, columns: list) -> None:
@@ -195,9 +242,10 @@ class SQLiteInit:
             return
         placeholders = ", ".join("?" for _ in columns)
         col_names = ", ".join(f'"{c}"' for c in columns)
-        sql = f'INSERT OR REPLACE INTO "{table_name}" ({col_names}) VALUES ({placeholders})'
+        sql = f'INSERT INTO "{table_name}" ({col_names}) VALUES ({placeholders})'
+        # Convertir toutes les lignes en une seule liste
+        converted_rows = []
         for row in rows:
-            # Convertir les types spéciaux (datetime, etc.)
             converted = []
             for val in row:
                 if isinstance(val, (datetime.date, datetime.time, datetime.datetime)):
@@ -207,7 +255,8 @@ class SQLiteInit:
                 elif isinstance(val, (memoryview, bytearray)):
                     val = bytes(val)
                 converted.append(val)
-            cursor.execute(sql, converted)
+            converted_rows.append(converted)
+        cursor.executemany(sql, converted_rows)
 
     def read_cursor(self, table: str) -> int:
         conn = db.local_conn

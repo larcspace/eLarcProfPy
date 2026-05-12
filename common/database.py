@@ -41,10 +41,12 @@ class Database:
     def _pg_params(self, section: str) -> dict:
         cfg = configparser.ConfigParser()
         cfg.read(_find_cfg())
+        # Pour la section IntranetDatabase, utiliser NewLarcDB comme base par défaut
+        default_db = 'NewLarcDB' if section == 'IntranetDatabase' else 'postgres'
         return {
             'host':             cfg.get(section, 'Host', fallback='127.0.0.1'),
             'port':             cfg.getint(section, 'Port', fallback=5432),
-            'dbname':           cfg.get(section, 'DB',   fallback='postgres'),
+            'dbname':           cfg.get(section, 'DB',   fallback=default_db),
             'user':             cfg.get(section, 'User', fallback='postgres'),
             'password':         cfg.get(section, 'Pass', fallback=''),
             'application_name': 'eLarcProf',
@@ -87,7 +89,7 @@ class Database:
         try:
             if self._sqlite:
                 self._sqlite.close()
-            self._sqlite = sqlite3.connect(db_path)
+            self._sqlite = sqlite3.connect(db_path, check_same_thread=False)
             self._sqlite.row_factory = sqlite3.Row
             self._sqlite.execute('PRAGMA journal_mode=WAL')
             self._mode = DBMode.SQLITE

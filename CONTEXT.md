@@ -47,12 +47,43 @@ eLarcProfPy/
 
 ## Phase 1 — TERMINÉE
 Écran de connexion `views/login.py` avec 4 modes :
-1. **Intranet** — email + mot de passe → `larcauth_aecuser` (hash SHA-256 champ `passdelph`)
+1. **Intranet** — email + mot de passe → `larcauth_aecuser` (hash SHA-256 champ `password`)
 2. **Cloud** — OAuth2 PKCE Google `@arc-en-ciel.org` → loopback HTTP port 8765
 3. **PIN** — email + PIN → SQLite `session_cache` (hash SHA-256)
 4. **Nouvelle instance** — copie le projet dans un nouveau dossier + `lancer.bat`
 
 Après auth réussie : popup "Phase 2 à implémenter" (placeholder tableau de bord).
+
+## Changements récents (12 mai 2026)
+
+### Base de données
+- Colonne `password` utilisée au lieu de `passdelph` dans `larcauth_aecuser`
+- Mot de passe standard `Aec-2026` accepté pour tous les utilisateurs (dans `auth_intranet`)
+- Vérification de l'email via `check_teacher_exists` (jointure avec `teachadm` sans colonne `enabled`)
+- Requête PostgreSQL unique avec `UNION ALL` pour les trois tables (évaluations, PEI, DP)
+- Transaction explicite dans SQLite pour les insertions
+- Vidage des tables avant insertion (`DELETE FROM`)
+- Utilisation de `executemany` pour les insertions
+
+### Interface
+- Indicateurs "Présence intranet ●" et "Présence cloud ●" en haut à droite
+- Feu de connexion après le texte dans la barre de statut
+- Bouton "Changer le mot de passe" visible après connexion Intranet
+- Boîte de dialogue de confirmation avant téléchargement
+- Timer de vérification réseau toutes les 30 secondes (uniquement fenêtre visible)
+- Connexion SQLite dédiée pour le téléchargement (`check_same_thread=False`)
+
+### Authentification
+- `auth_intranet` accepte le mot de passe standard `Aec-2026`
+- `check_teacher_exists` ne vérifie plus la colonne `enabled` (inexistante)
+- `ChangePasswordDialog` utilise `AuthManager.auth_intranet` pour vérifier l'ancien mot de passe
+- Création d'instance : demande du mot de passe (Intranet) ou OAuth2 (Cloud)
+
+### Corrections
+- Jointure `t.aecuser_ptr_id` au lieu de `t.user_id` dans `check_teacher_exists`
+- Colonnes `last_name` et `first_name` au lieu de `nom` et `prenom`
+- Chemin normalisé avec `os.path.normpath` pour éviter les mélanges `/` et `\`
+- Ignorer le dossier `.venv` lors de la copie d'instance
 
 ## Phase 2 — PROCHAINE ÉTAPE
 Avant de coder le tableau de bord, il faut :
