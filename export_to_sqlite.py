@@ -12,7 +12,7 @@ PG_USER = "postgres"
 PG_PASSWORD = "postgres"
 
 # Chemin du fichier SQLite de sortie
-SQLITE_PATH = "ichier.db"
+SQLITE_PATH = "elarc.db"
 
 def get_pg_connection():
     return psycopg2.connect(

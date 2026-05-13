@@ -26,6 +26,7 @@ class _Worker(QThread):
         super().__init__(parent)
         self._fn   = fn
         self._args = args
+        self.finished.connect(self.deleteLater)
 
     def run(self):
         try:
@@ -61,13 +62,13 @@ class LoginWindow(QMainWindow):
             padding: 9px 20px; border: none; border-radius: 4px;
             font-size: 12px; font-weight: bold; color: white;
         }
-        QPushButton#btnIntra  { background: #2980b9; }
+        QPushButton#btnIntra  { background: #2980b9; padding: 9px 20px; }
         QPushButton#btnIntra:hover  { background: #3498db; }
         QPushButton#btnIntra:disabled  { background: #bdc3c7; }
         QPushButton#btnGoogle { background: #c0392b; }
         QPushButton#btnGoogle:hover { background: #e74c3c; }
         QPushButton#btnGoogle:disabled { background: #bdc3c7; }
-        QPushButton#btnPIN    { background: #8e44ad; }
+        QPushButton#btnPIN    { background: #8e44ad; padding: 9px 20px; }
         QPushButton#btnPIN:hover    { background: #9b59b6; }
         QPushButton#btnPIN:disabled { background: #bdc3c7; }
         QPushButton#btnCreate { background: #27ae60; }
@@ -86,7 +87,6 @@ class LoginWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self._worker:       Optional[_Worker] = None
-        self._net_worker:   Optional[_Worker] = None
         self._net_mode:     Optional[NetworkMode] = None
         self._auto_connect_done: bool = False  # ← nouveau
         self._setup_ui()
@@ -158,6 +158,15 @@ class LoginWindow(QMainWindow):
         self._log_area.hide()
         vbox.addWidget(self._log_area)
 
+        # Indicateur en bas (centré)
+        self._bottom_indicator = QLabel('')
+        self._bottom_indicator.setObjectName('bottomIndicator')
+        self._bottom_indicator.setAlignment(Qt.AlignCenter)
+        self._bottom_indicator.setStyleSheet(
+            'color: #2c3e50; font-size: 16px; font-weight: bold;'
+        )
+        vbox.addWidget(self._bottom_indicator)
+
         # Status bar
         sb = QStatusBar()
         self.setStatusBar(sb)
@@ -166,22 +175,9 @@ class LoginWindow(QMainWindow):
         self._net_txt.setContentsMargins(24, 0, 0, 0)  # aligné avec le titre
         self._dot_lbl = QLabel('●')
         self._dot_lbl.setStyleSheet('color: #95a5a6; font-size: 14px;')
-        self._ses_txt = QLabel('')
         sb.addWidget(self._net_txt)
         sb.addWidget(self._dot_lbl)
 
-        # Bouton Changer le mot de passe (visible uniquement après connexion Intranet)
-        self._btn_change_pwd = QPushButton('Changer le mot de passe')
-        self._btn_change_pwd.setObjectName('btnChangePwd')
-        self._btn_change_pwd.setStyleSheet(
-            'background: #7f8c8d; color: white; padding: 4px 12px; '
-            'font-size: 11px; border-radius: 3px;'
-        )
-        self._btn_change_pwd.clicked.connect(self._on_change_password)
-        self._btn_change_pwd.hide()
-        sb.addPermanentWidget(self._btn_change_pwd)
-
-        sb.addPermanentWidget(self._ses_txt)
 
     def _tab_widget(self) -> tuple:
         """Returns (QWidget tab, QFormLayout, outer QVBoxLayout)"""
@@ -211,6 +207,16 @@ class LoginWindow(QMainWindow):
         self._btn_intra.clicked.connect(self._on_intranet)
         self._edt_i_pass.returnPressed.connect(self._btn_intra.click)
         vbox.addWidget(self._btn_intra, alignment=Qt.AlignRight)
+
+        self._btn_change_pwd_intra = QPushButton('Changer le mot de passe')
+        self._btn_change_pwd_intra.setObjectName('btnChangePwdIntra')
+        self._btn_change_pwd_intra.setStyleSheet(
+            'background: #7f8c8d; color: white; padding: 9px 20px; '
+            'font-size: 11px; border-radius: 3px;'
+        )
+        self._btn_change_pwd_intra.clicked.connect(self._on_change_password)
+        vbox.addWidget(self._btn_change_pwd_intra, alignment=Qt.AlignRight)
+
         vbox.addStretch()
 
         self._tabs.addTab(tab, 'Intranet')
@@ -260,6 +266,16 @@ class LoginWindow(QMainWindow):
         self._btn_pin.clicked.connect(self._on_pin)
         self._edt_p_pin.returnPressed.connect(self._btn_pin.click)
         vbox.addWidget(self._btn_pin, alignment=Qt.AlignRight)
+
+        self._btn_change_pin = QPushButton('Changer le code PIN')
+        self._btn_change_pin.setObjectName('btnChangePin')
+        self._btn_change_pin.setStyleSheet(
+            'background: #7f8c8d; color: white; padding: 9px 20px; '
+            'font-size: 11px; border-radius: 3px;'
+        )
+        self._btn_change_pin.clicked.connect(self._on_change_pin)
+        vbox.addWidget(self._btn_change_pin, alignment=Qt.AlignRight)
+
         vbox.addStretch()
 
         self._tabs.addTab(tab, 'Hors connexion')
@@ -307,17 +323,24 @@ class LoginWindow(QMainWindow):
     # Network detection
     # ------------------------------------------------------------------
     def _start_net_detection(self) -> None:
-        self._net_worker = _Worker(lambda: (True, detect_network(), ''))
-        self._net_worker.done.connect(self._on_net_detected)
-        self._net_worker.start()
+        worker = _Worker(lambda: (True, *detect_network(), ''), parent=self)
+        worker.done.connect(self._on_net_detected)
+        worker.start()
 
     def showEvent(self, event):
         """Appelé lorsque la fenêtre devient visible."""
         super().showEvent(event)
         # Démarrer le timer de vérification réseau
         self._network_timer.start()
+        # Vérification réseau synchrone immédiate
+        intra_ok, internet_ok = detect_network()
+        self._on_net_detected((True, intra_ok, internet_ok, ''))
+        # Lancer une vérification réseau asynchrone (pour le timer)
+        self._check_network()
         # Mettre à jour les indicateurs immédiatement
-        self._refresh_indicators()
+        self._update_indicators(intra_ok, internet_ok)
+        # Mettre à jour l'indicateur en bas selon l'état du module
+        self._update_status_bar_from_module_config()
 
     def hideEvent(self, event):
         """Appelé lorsque la fenêtre est masquée."""
@@ -327,20 +350,24 @@ class LoginWindow(QMainWindow):
 
     def _check_network(self) -> None:
         """Vérifie la connectique réseau (appelé par le timer)."""
-        self._net_worker = _Worker(lambda: (True, detect_network(), ''))
-        self._net_worker.done.connect(self._on_net_detected)
-        self._net_worker.start()
+        worker = _Worker(lambda: (True, *detect_network(), ''), parent=self)
+        worker.done.connect(self._on_net_detected)
+        worker.start()
 
-    def _refresh_indicators(self) -> None:
-        """Met à jour les feux Intranet et Cloud en fonction de l'état actuel des connexions."""
-        intra_ok = db.server_conn is not None and db.mode == DBMode.INTRANET
-        cloud_ok = db.server_conn is not None and db.mode == DBMode.CLOUD
-        self._update_indicators(intranet=intra_ok, cloud=cloud_ok)
 
     def _on_net_detected(self, result) -> None:
-        ok, mode, _ = result
-        if not ok or mode is None:
+        ok, intra_ok, internet_ok, _ = result
+        if not ok:
             return
+        self._intranet_ok = intra_ok
+        self._internet_ok = internet_ok
+        # Déterminer le mode principal pour la barre d'état
+        if intra_ok:
+            mode = NetworkMode.INTRANET
+        elif internet_ok:
+            mode = NetworkMode.INTERNET
+        else:
+            mode = NetworkMode.OFFLINE
         self._net_mode = mode
         color = network_mode_color(mode)
         self._dot_lbl.setStyleSheet(f'color: {color}; font-size: 14px;')
@@ -350,31 +377,46 @@ class LoginWindow(QMainWindow):
             NetworkMode.OFFLINE:  'Hors connexion',
         }
         self._net_txt.setText(labels.get(mode, ''))
-        # Mettre à jour les indicateurs
-        self._update_indicators_from_mode(mode)
+        # Mettre à jour les indicateurs en fonction de la détection réseau
+        self._update_indicators(intra_ok, internet_ok)
+        # Mettre à jour l'indicateur en bas (état 0 ou 1 selon si session existe)
+        from common.session import session
+        if session.is_authenticated:
+            self._update_status_bar(
+                AuthResult(
+                    user_id=session.user_id,
+                    email=session.email,
+                    full_name=session.full_name,
+                    role=session.role,
+                    term_id=session.active_term_id,
+                    term_label=session.active_term_label
+                ),
+                session.conn_mode
+            )
+        else:
+            self._update_status_bar(
+                AuthResult(
+                    user_id=0,
+                    email='',
+                    full_name='',
+                    role=UserRole.PROF,
+                    term_id=0,
+                    term_label=''
+                ),
+                ConnMode.OFFLINE
+            )
 
         # Connexion automatique une seule fois au démarrage
         if not self._auto_connect_done:
             self._auto_connect_done = True
             self._auto_connect(mode)
 
-    def _update_indicators_from_mode(self, mode: NetworkMode) -> None:
-        """Met à jour les feux en fonction du mode réseau détecté."""
-        if mode == NetworkMode.INTRANET:
-            self._update_indicators(intranet=True, cloud=False)
-            self._dot_lbl.setStyleSheet('color: #27ae60; font-size: 14px;')
-        elif mode == NetworkMode.INTERNET:
-            self._update_indicators(intranet=False, cloud=True)
-            self._dot_lbl.setStyleSheet('color: #27ae60; font-size: 14px;')
-        else:
-            self._update_indicators(intranet=False, cloud=False)
-            self._dot_lbl.setStyleSheet('color: #2c3e50; font-size: 14px;')
 
     def _auto_connect(self, mode: NetworkMode) -> None:
         # Priorité : Intranet > Cloud > Device
         self._set_busy(True)
         self._log('Tentative de connexion à l\'Intranet…')
-        self._worker = _Worker(db.connect_intranet)
+        self._worker = _Worker(db.connect_intranet, parent=self)
         self._worker.done.connect(
             lambda ok: self._on_auto_connect_result(ok, mode)
         )
@@ -383,13 +425,11 @@ class LoginWindow(QMainWindow):
     def _on_auto_connect_result(self, ok: bool, mode: NetworkMode) -> None:
         if ok:
             self._set_busy(False)
-            self._log('Connecté à l\'Intranet.')
-            self._update_indicators(intranet=True, cloud=False)
+            # Ne pas afficher "Connecté à l'Intranet" car l'utilisateur n'est pas authentifié
             return
         # Intranet échoué, essayer le Cloud
         self._log('Intranet indisponible, tentative de connexion au Cloud…')
-        self._update_indicators(intranet=False, cloud=False)
-        self._worker = _Worker(db.connect_cloud)
+        self._worker = _Worker(db.connect_cloud, parent=self)
         self._worker.done.connect(
             lambda ok2: self._on_cloud_connect_result(ok2, mode)
         )
@@ -398,14 +438,14 @@ class LoginWindow(QMainWindow):
     def _on_cloud_connect_result(self, ok: bool, mode: NetworkMode) -> None:
         if ok:
             self._set_busy(False)
-            self._log('Connecté au Cloud.')
-            self._update_indicators(intranet=False, cloud=True)
+            # Ne pas afficher "Connecté au Cloud" car l'utilisateur n'est pas authentifié
             return
         # Cloud échoué, passer en mode device (hors connexion)
         self._set_busy(False)
         self._log('Aucune connexion serveur disponible. Passage en mode hors connexion.')
-        self._update_indicators(intranet=False, cloud=False)
-        sqlite_init.init()
+        if not sqlite_init.init():
+            self._show_error('Impossible d\'initialiser la base locale.')
+            return
 
     def _update_indicators(self, intranet: bool, cloud: bool) -> None:
         """Met à jour les feux Intranet et Cloud."""
@@ -413,13 +453,17 @@ class LoginWindow(QMainWindow):
         cloud_color = '#27ae60' if cloud else '#2c3e50'
         self._intra_indicator.setStyleSheet(f'color: {intra_color}; font-size: 12px;')
         self._cloud_indicator.setStyleSheet(f'color: {cloud_color}; font-size: 12px;')
-        # Afficher le bouton Changer le mot de passe uniquement si Intranet connecté
-        self._btn_change_pwd.setVisible(intranet)
 
     def _on_change_password(self) -> None:
         """Ouvre la boîte de dialogue de changement de mot de passe."""
         from views.password import ChangePasswordDialog
         dlg = ChangePasswordDialog(self)
+        dlg.exec()
+
+    def _on_change_pin(self) -> None:
+        """Ouvre la boîte de dialogue de changement de PIN."""
+        from views.password import ChangePinDialog
+        dlg = ChangePinDialog(self)
         dlg.exec()
 
     # ------------------------------------------------------------------
@@ -433,7 +477,7 @@ class LoginWindow(QMainWindow):
             return
         self._hide_error()
         self._set_busy(True)
-        self._worker = _Worker(AuthManager.auth_intranet, email, pwd)
+        self._worker = _Worker(AuthManager.auth_intranet, email, pwd, parent=self)
         self._worker.done.connect(
             lambda r: self._on_auth_done(r, ConnMode.INTRANET)
         )
@@ -442,7 +486,7 @@ class LoginWindow(QMainWindow):
     def _on_cloud(self) -> None:
         self._hide_error()
         self._set_busy(True)
-        self._worker = _Worker(OAuth2Manager.authenticate)
+        self._worker = _Worker(OAuth2Manager.authenticate, parent=self)
         self._worker.done.connect(
             lambda r: self._on_auth_done(r, ConnMode.CLOUD)
         )
@@ -455,11 +499,11 @@ class LoginWindow(QMainWindow):
             self._show_error('Veuillez saisir votre email et votre PIN.')
             return
         if not sqlite_init.init():
-            self._show_error('Impossible d\'ouvrir la base locale.')
+            self._show_error('Impossible d\'initialiser la base locale.')
             return
         self._hide_error()
         self._set_busy(True)
-        self._worker = _Worker(AuthManager.auth_pin, email, pin)
+        self._worker = _Worker(AuthManager.auth_pin, email, pin, parent=self)
         self._worker.done.connect(
             lambda r: self._on_auth_done(r, ConnMode.OFFLINE)
         )
@@ -484,6 +528,10 @@ class LoginWindow(QMainWindow):
             res.term_id = infos['trimestre_courant']
             res.term_label = infos['trimestre_label']
 
+            # Initialiser la base locale avant d'écrire dans module_config
+            if not sqlite_init.init():
+                self._show_error('Impossible d\'initialiser la base locale.')
+                return
             # Initialiser la table module_config avec les informations du professeur
             sqlite_init.init_module_config(
                 annee_scolaire=infos['annee_scolaire'],
@@ -508,6 +556,42 @@ class LoginWindow(QMainWindow):
             res.term_id = infos['trimestre_courant']
             res.term_label = infos['trimestre_label']
 
+            # Initialiser la base locale avant d'écrire dans module_config
+            if not sqlite_init.init():
+                self._show_error('Impossible d\'initialiser la base locale.')
+                return
+            # Initialiser la table module_config avec les informations du professeur
+            sqlite_init.init_module_config(
+                annee_scolaire=infos['annee_scolaire'],
+                trimestre_courant=infos['trimestre_courant'],
+                nom_professeur=res.full_name,
+                email_professeur=res.email
+            )
+
+            # Mode 4 : télécharger toutes les données du professeur pour le trimestre en cours
+            self._show_confirmation_dialog(res, mode)
+            return
+
+        # Pour le mode PIN sans connexion serveur, initialiser module_config avec les informations de la session
+        if mode == ConnMode.OFFLINE and db.server_conn is None:
+            # Initialiser la base locale avant d'écrire dans module_config
+            if not sqlite_init.init():
+                self._show_error('Impossible d\'initialiser la base locale.')
+                return
+            # Utiliser les informations de res (qui viennent de la session locale)
+            sqlite_init.init_module_config(
+                annee_scolaire='',
+                trimestre_courant=res.term_id,
+                nom_professeur=res.full_name,
+                email_professeur=res.email
+            )
+
+        # Pour le mode PIN avec connexion serveur, télécharger les données
+        if mode == ConnMode.OFFLINE and db.server_conn is not None:
+            # Initialiser la base locale avant d'écrire dans module_config
+            if not sqlite_init.init():
+                self._show_error('Impossible d\'initialiser la base locale.')
+                return
             # Initialiser la table module_config avec les informations du professeur
             sqlite_init.init_module_config(
                 annee_scolaire=infos['annee_scolaire'],
@@ -544,13 +628,13 @@ class LoginWindow(QMainWindow):
         layout.addWidget(msg)
 
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        buttons.accepted.connect(lambda: self._execute_steps(res, mode, dlg))
+        buttons.accepted.connect(lambda: self._execute_steps(res, mode, dlg, infos))
         buttons.rejected.connect(dlg.reject)
         layout.addWidget(buttons)
 
         dlg.exec()
 
-    def _execute_steps(self, res: AuthResult, mode: ConnMode, dlg) -> None:
+    def _execute_steps(self, res: AuthResult, mode: ConnMode, dlg, infos: dict) -> None:
         """Exécute les étapes une par une avec processEvents."""
         dlg.accept()  # ferme la boîte de dialogue
         self._set_busy(True)
@@ -576,14 +660,16 @@ class LoginWindow(QMainWindow):
         # Lancer le téléchargement dans un thread séparé
         self._data_thread = _Worker(
             sqlite_init.take_teacher_data,
-            res.user_id, res.term_id,
+            infos,  # passer infos directement
             None,  # log_fn sera géré par le thread via QMetaObject
             self._temp_conn,
+            None,  # conn_pg (None pour utiliser db.server_conn)
             parent=self
         )
         self._data_thread.done.connect(
             lambda result: self._on_data_finished(result, res, mode)
         )
+        # Modifier _on_data_finished pour accepter le tuple
         self._data_thread.start()
 
     def _on_data_finished(self, result, res: AuthResult, mode: ConnMode) -> None:
@@ -596,8 +682,9 @@ class LoginWindow(QMainWindow):
             except Exception:
                 pass
             self._temp_conn = None
-        if not result:
-            self._show_error('Échec du téléchargement des données du professeur.')
+        ok, err_msg = result if isinstance(result, tuple) else (result, '')
+        if not ok:
+            self._show_error(f'Échec du téléchargement des données du professeur : {err_msg}')
             return
         self._log('Téléchargement terminé avec succès.')
         # Appliquer la session maintenant que les données sont prêtes
@@ -612,6 +699,14 @@ class LoginWindow(QMainWindow):
         session.active_term_label = res.term_label
         session.conn_mode         = mode
         session.is_authenticated  = True
+
+        # Mettre à jour les indicateurs
+        if mode == ConnMode.INTRANET:
+            self._update_indicators(True, False)
+        elif mode == ConnMode.CLOUD:
+            self._update_indicators(False, True)
+        else:
+            self._update_indicators(False, False)
 
         # Persist session + offer to set PIN if online auth
         sqlite_init.init()
@@ -729,7 +824,7 @@ class LoginWindow(QMainWindow):
             )
             self._show_progress('Copie des fichiers du projet…')
             for item in os.listdir(src):
-                if item in ('elarc.db', '__pycache__', '.git', '.venv'):
+                if item in ('__pycache__', '.git', '.venv'):
                     continue
                 s = os.path.join(src, item)
                 d = os.path.join(dest, item)
@@ -737,6 +832,13 @@ class LoginWindow(QMainWindow):
                     shutil.copytree(s, d, dirs_exist_ok=True)
                 else:
                     shutil.copy2(s, d)
+            # Copier elarc.db s'il existe
+            src_db = os.path.normpath(os.path.join(src, 'elarc.db'))
+            if os.path.exists(src_db):
+                shutil.copy2(src_db, os.path.join(dest, 'elarc.db'))
+                self._log("elarc.db copié.")
+            else:
+                self._log("elarc.db introuvable dans la source.")
             self._log("Copie terminée.")
 
             # Write instance-specific config stub
@@ -826,10 +928,77 @@ class LoginWindow(QMainWindow):
     def _hide_error(self) -> None:
         self._err_lbl.hide()
 
+    def _get_module_config(self) -> Optional[dict]:
+        """Lit la configuration du module depuis la base locale.
+        Retourne un dict avec 'nom_professeur', 'annee_scolaire', 'trimestre_courant'
+        ou None si la table n'existe pas ou est vide."""
+        try:
+            conn = db.local_conn
+            if conn is None:
+                return None
+            cur = conn.cursor()
+            cur.execute("SELECT nom_professeur, annee_scolaire, trimestre_courant FROM module_config LIMIT 1")
+            row = cur.fetchone()
+            if row and row[0]:
+                return {
+                    'nom_professeur': row[0],
+                    'annee_scolaire': row[1],
+                    'trimestre_courant': row[2]
+                }
+        except Exception:
+            pass
+        return None
+
+    def _update_status_bar_from_module_config(self) -> None:
+        """Met à jour l'indicateur en bas en lisant la configuration du module."""
+        config = self._get_module_config()
+        if config:
+            prof_name = config['nom_professeur']
+            # Déterminer le mode de connexion actuel
+            from common.session import session
+            if session.is_authenticated:
+                mode = session.conn_mode
+            else:
+                mode = ConnMode.OFFLINE
+            self._update_status_bar(
+                AuthResult(
+                    user_id=0,
+                    email='',
+                    full_name=prof_name,
+                    role=UserRole.PROF,
+                    term_id=config['trimestre_courant'],
+                    term_label=''
+                ),
+                mode
+            )
+        else:
+            # Module non instancié
+            self._bottom_indicator.setText("Module eLarcProf non instanciée")
+            self._bottom_indicator.setStyleSheet(
+                'color: #2c3e50; font-size: 16px; font-weight: bold;'
+            )
+
     def _update_status_bar(self, res: AuthResult, mode: ConnMode) -> None:
-        term = f' · {res.term_label}' if res.term_label else ''
-        self._ses_txt.setText(
-            f'{res.full_name}  |  {res.role.value}{term}  |  {mode.value}'
+        """Met à jour l'indicateur en bas avec l'état de la connexion."""
+        # Déterminer le nom du professeur
+        prof_name = res.full_name if res.full_name else self._get_module_config()['nom_professeur'] if self._get_module_config() else ''
+
+        if mode == ConnMode.INTRANET:
+            text = f"Module eLarcProf de {prof_name} Connecté à l'Intranet"
+            color = "#27ae60"  # vert
+        elif mode == ConnMode.CLOUD:
+            text = f"Module eLarcProf de {prof_name} connecté au Cloud"
+            color = "#27ae60"  # vert
+        else:
+            # mode == ConnMode.OFFLINE
+            if prof_name:
+                text = f"Module eLarcProf de {prof_name} Non Connecté"
+            else:
+                text = "Module eLarcProf non instanciée"
+            color = "#2c3e50"  # noir
+        self._bottom_indicator.setText(text)
+        self._bottom_indicator.setStyleSheet(
+            f'color: {color}; font-size: 16px; font-weight: bold;'
         )
 
     def _open_main_window(self, res: AuthResult) -> None:

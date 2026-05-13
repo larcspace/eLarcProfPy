@@ -32,10 +32,10 @@ def _sha256_hex(s: str) -> str:
     return hashlib.sha256(s.encode('utf-8')).hexdigest()
 
 
-def _deduce_role(is_teacher: bool, is_coord: bool, is_secr: bool, is_admin: bool) -> UserRole:
-    if is_admin: return UserRole.ADMIN
-    if is_coord: return UserRole.COORD
-    if is_secr:  return UserRole.SECR
+def _deduce_role(is_adm: bool, is_coordonator: bool, is_secretary: bool) -> UserRole:
+    if is_adm: return UserRole.ADMIN
+    if is_coordonator: return UserRole.COORD
+    if is_secretary: return UserRole.SECR
     return UserRole.PROF
 
 
@@ -65,7 +65,7 @@ class AuthManager:
         try:
             with conn.cursor() as cur:
                 cur.execute(
-                    "SELECT id, email, last_name, first_name, password, enabled "
+                    "SELECT id, email, last_name, first_name, password "
                     "FROM larcauth_aecuser WHERE LOWER(email) = %s",
                     (email.strip().lower(),)
                 )
@@ -73,10 +73,9 @@ class AuthManager:
 
             if row is None:
                 return False, AuthResult(), 'Utilisateur introuvable'
-            if not row[5]:
-                return False, AuthResult(), 'Compte désactivé'
-            # Mot de passe standard pour tous les utilisateurs
-            if password != 'Aec-2026':
+            # Vérifier le hash du mot de passe
+            stored_hash = row[4]  # colonne password
+            if stored_hash and stored_hash != pass_hash:
                 return False, AuthResult(), 'Mot de passe incorrect'
 
             user_id   = row[0]
@@ -84,8 +83,8 @@ class AuthManager:
 
             with conn.cursor() as cur:
                 cur.execute(
-                    "SELECT is_teacher, is_coord, is_secr, is_admin "
-                    "FROM larcauth_teachadm WHERE user_id = %s AND enabled = TRUE",
+                    "SELECT is_adm, is_coordonator, is_secretary "
+                    "FROM larcauth_teachadm WHERE aecuser_ptr_id = %s",
                     (user_id,)
                 )
                 tadm = cur.fetchone()
@@ -148,41 +147,36 @@ class AuthManager:
             return False, {}
 
         try:
+            # Étape 1 : récupérer l'identité de l'utilisateur
             with conn.cursor() as cur:
-                cur.execute("""
-                    SELECT
-                        a.id,
-                        a.first_name,
-                        a.last_name,
-                        a.email
-                    FROM public.larcauth_aecuser a
-                    JOIN public.larcauth_teachadm t ON t.aecuser_ptr_id = a.id
-                    WHERE a.email = %s
-                """, (email,))
-                row = cur.fetchone()
-                if row is None:
-                    # Vérifier si l'email existe dans aecuser
-                    cur.execute(
-                        "SELECT id FROM public.larcauth_aecuser WHERE email = %s",
-                        (email,)
-                    )
-                    user_row = cur.fetchone()
-                    if user_row is None:
-                        print(f"check_teacher_exists: email {email} introuvable dans aecuser")
-                    else:
-                        # Vérifier s'il y a une entrée dans teachadm (même désactivée)
-                        cur.execute(
-                            "SELECT 1 FROM public.larcauth_teachadm WHERE user_id = %s",
-                            (user_row[0],)
-                        )
-                        tadm_row = cur.fetchone()
-                        if tadm_row is None:
-                            print(f"check_teacher_exists: user {user_row[0]} n'a pas d'entrée dans teachadm")
-                        else:
-                            print(f"check_teacher_exists: user {user_row[0]} a une entrée dans teachadm")
+                cur.execute(
+                    "SELECT id, first_name, last_name, email "
+                    "FROM public.larcauth_aecuser WHERE email = %s",
+                    (email,)
+                )
+                user_row = cur.fetchone()
+                if user_row is None:
+                    print(f"check_teacher_exists: email {email} introuvable dans aecuser")
                     return False, {}
 
-                # Récupérer l'année scolaire et le trimestre en cours
+                user_id = user_row[0]
+                first_name = user_row[1]
+                last_name = user_row[2]
+                email = user_row[3]
+
+            # Étape 2 : vérifier s'il est professeur dans teachadm
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT 1 FROM public.larcauth_teachadm WHERE aecuser_ptr_id = %s",
+                    (user_id,)
+                )
+                tadm_row = cur.fetchone()
+                if tadm_row is None:
+                    print(f"check_teacher_exists: user {user_id} n'a pas d'entrée dans teachadm")
+                    return False, {}
+
+            # Récupérer l'année scolaire et le trimestre en cours
+            with conn.cursor() as cur:
                 cur.execute("""
                     SELECT
                         ay.label AS annee_scolaire,
@@ -199,16 +193,16 @@ class AuthManager:
                     print("check_teacher_exists: année scolaire non trouvée")
                     return False, {}
 
-                infos = {
-                    'user_id': row[0],
-                    'first_name': row[1],
-                    'last_name': row[2],
-                    'email': row[3],
-                    'annee_scolaire': year_row[0],
-                    'trimestre_courant': year_row[1],
-                    'trimestre_label': year_row[2],
-                }
-                return True, infos
+            infos = {
+                'user_id': user_id,
+                'first_name': first_name,
+                'last_name': last_name,
+                'email': email,
+                'annee_scolaire': year_row[0],
+                'trimestre_courant': year_row[1],
+                'trimestre_label': year_row[2],
+            }
+            return True, infos
 
         except Exception as e:
             print(f"Erreur check_teacher_exists: {e}")
@@ -352,8 +346,8 @@ class OAuth2Manager:
 
             with conn.cursor() as cur:
                 cur.execute(
-                    "SELECT is_teacher, is_coord, is_secr, is_admin "
-                    "FROM larcauth_teachadm WHERE user_id = %s AND enabled = TRUE",
+                    "SELECT is_adm, is_coordonator, is_secretary "
+                    "FROM larcauth_teachadm WHERE aecuser_ptr_id = %s AND enabled = TRUE",
                     (user_id,)
                 )
                 tadm = cur.fetchone()

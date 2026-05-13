@@ -54,36 +54,48 @@ eLarcProfPy/
 
 Après auth réussie : popup "Phase 2 à implémenter" (placeholder tableau de bord).
 
-## Changements récents (12 mai 2026)
+## Changements récents (13 mai 2026)
 
-### Base de données
-- Colonne `password` utilisée au lieu de `passdelph` dans `larcauth_aecuser`
-- Mot de passe standard `Aec-2026` accepté pour tous les utilisateurs (dans `auth_intranet`)
-- Vérification de l'email via `check_teacher_exists` (jointure avec `teachadm` sans colonne `enabled`)
-- Requête PostgreSQL unique avec `UNION ALL` pour les trois tables (évaluations, PEI, DP)
-- Transaction explicite dans SQLite pour les insertions
-- Vidage des tables avant insertion (`DELETE FROM`)
-- Utilisation de `executemany` pour les insertions
+### 1. Boutons "Changer le mot de passe" et "Changer le code PIN"
+- Ajout d'un bouton "Changer le mot de passe" dans l'onglet Intranet
+- Ajout d'un bouton "Changer le code PIN" dans l'onglet Hors connexion
+- Ajustement de la taille des boutons pour correspondre aux boutons de connexion
 
-### Interface
-- Indicateurs "Présence intranet ●" et "Présence cloud ●" en haut à droite
-- Feu de connexion après le texte dans la barre de statut
-- Bouton "Changer le mot de passe" visible après connexion Intranet
-- Boîte de dialogue de confirmation avant téléchargement
-- Timer de vérification réseau toutes les 30 secondes (uniquement fenêtre visible)
-- Connexion SQLite dédiée pour le téléchargement (`check_same_thread=False`)
+### 2. Suppression du bouton "Changer le mot de passe" de la barre d'état
+- Le bouton était dans la barre d'état en bas ; il a été supprimé car remplacé par le bouton dans l'onglet Intranet
 
-### Authentification
-- `auth_intranet` accepte le mot de passe standard `Aec-2026`
-- `check_teacher_exists` ne vérifie plus la colonne `enabled` (inexistante)
-- `ChangePasswordDialog` utilise `AuthManager.auth_intranet` pour vérifier l'ancien mot de passe
-- Création d'instance : demande du mot de passe (Intranet) ou OAuth2 (Cloud)
+### 3. Indicateur d'état en bas
+- Remplacement des deux indicateurs "Présence intranet ●" et "Présence cloud ●" par un seul indicateur large centré en bas
+- L'indicateur affiche l'un des 4 états :
+  - 0 : "Module eLarcProf non instanciée" (feu noir)
+  - 1 : "Module eLarcProf de Nom et prénom du prof Non Connecté" (feu noir)
+  - 2 : "Module eLarcProf de Nom et prénom du prof Connecté à l'Intranet" (feu vert)
+  - 3 : "Module eLarcProf de Nom et prénom du prof connecté au Cloud" (feu vert)
+- Les deux indicateurs "Présence intranet ●" et "Présence cloud ●" ont été remis en haut à côté du titre
 
-### Corrections
-- Jointure `t.aecuser_ptr_id` au lieu de `t.user_id` dans `check_teacher_exists`
-- Colonnes `last_name` et `first_name` au lieu de `nom` et `prenom`
-- Chemin normalisé avec `os.path.normpath` pour éviter les mélanges `/` et `\`
-- Ignorer le dossier `.venv` lors de la copie d'instance
+### 4. Correction de l'authentification Intranet
+- Remplacement de `UserRole.TEACHER` par `UserRole.PROF` (car `TEACHER` n'existe pas)
+- Suppression de la colonne `enabled` dans les requêtes (car elle n'existe pas)
+- Utilisation des colonnes correctes : `is_adm`, `is_coordonator`, `is_secretary`
+- Vérification du hash du mot de passe stocké (colonne `password`) au lieu de comparer avec `'Aec-2026'`
+
+### 5. Base de données unique `elarc.db`
+- Suppression de `SQLiteDB.db` (plus utilisé)
+- `elarc.db` est créée directement avec les tables métiers (`larcauth_evaluation`, `larcauth_learnerpei_has_termsubjectpei`, `larcauth_learnerdp_has_termsubjectdp`) et les tables locales (`session_cache`, `sync_cursor`, `module_config`)
+- `export_to_sqlite.py` exporte maintenant vers `elarc.db` (au lieu de `SQLiteDB.db`)
+- `sqlite_init.init()` crée `elarc.db` vide puis exécute `_DDL` pour créer les tables
+
+### 6. Téléchargement des données du professeur
+- `take_teacher_data` accepte maintenant `infos` (dict) au lieu de `user_id` et `term_id`
+- Les tables métiers sont vidées avant d'être remplies
+- La connexion serveur est vérifiée avant le téléchargement
+- `_on_auth_done` appelle `sqlite_init.init()` avant `init_module_config()`
+
+### 7. Création d'instance
+- `elarc.db` est copié dans le dossier de destination lors de la création d'une nouvelle instance
+
+### 8. Validation du PIN
+- La validation du PIN vérifie maintenant `len(new_pin) > 8` (max 8 chiffres)
 
 ## Phase 2 — PROCHAINE ÉTAPE
 Avant de coder le tableau de bord, il faut :

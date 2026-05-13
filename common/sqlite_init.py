@@ -1,4 +1,5 @@
 import os
+import shutil
 import hashlib
 import json
 import datetime
@@ -34,6 +35,36 @@ CREATE TABLE IF NOT EXISTS module_config (
     date_creation_module TEXT NOT NULL DEFAULT (datetime('now')),
     derniere_synchronisation TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+CREATE TABLE IF NOT EXISTS larcauth_evaluation (
+    id INTEGER PRIMARY KEY,
+    fk_classroom_termsubject_id INTEGER,
+    fk_student_id INTEGER,
+    evaluation_type TEXT,
+    evaluation_date TEXT,
+    grade TEXT,
+    comment TEXT,
+    created_at TEXT,
+    updated_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS larcauth_learnerpei_has_termsubjectpei (
+    id INTEGER PRIMARY KEY,
+    learner_has_termsubject_ptr_id INTEGER,
+    fk_pei_id INTEGER,
+    fk_term_id INTEGER,
+    created_at TEXT,
+    updated_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS larcauth_learnerdp_has_termsubjectdp (
+    id INTEGER PRIMARY KEY,
+    learner_has_termsubject_ptr_id INTEGER,
+    fk_dp_id INTEGER,
+    fk_term_id INTEGER,
+    created_at TEXT,
+    updated_at TEXT
+);
 """
 
 
@@ -43,6 +74,13 @@ class SQLiteInit:
             db_path = os.path.normpath(os.path.join(
                 os.path.dirname(os.path.abspath(__file__)), '..', 'elarc.db'
             ))
+        # Créer la base si elle n'existe pas
+        if not os.path.exists(db_path):
+            # Créer un fichier vide
+            open(db_path, 'w').close()
+            print(f"Base {db_path} créée.")
+        else:
+            print(f"Base {db_path} déjà existante.")
         if not db.connect_sqlite(db_path):
             return False
         conn = db.local_conn
@@ -96,23 +134,34 @@ class SQLiteInit:
         ''', (annee_scolaire, trimestre_courant, nom_professeur, email_professeur))
         conn.commit()
 
-    def take_teacher_data(self, user_id: int, term_id: int, log_fn=None, conn_sqlite=None) -> bool:
+    def take_teacher_data(self, infos: dict, log_fn=None, conn_sqlite=None, conn_pg=None) -> tuple:
         """
         Récupère les données du professeur depuis PostgreSQL (Intranet ou Supabase)
         pour les 3 tables modifiables et les insère dans SQLite.
         Retourne True si réussi, False sinon.
         log_fn : fonction optionnelle pour journaliser les messages.
         conn_sqlite : connexion SQLite optionnelle (si None, utilise db.local_conn)
+        conn_pg : connexion PostgreSQL optionnelle (si None, utilise db.server_conn)
         """
-        conn_pg = db.server_conn
+        user_id = infos['user_id']
+        term_id = infos['trimestre_courant']
+        if conn_pg is None:
+            conn_pg = db.server_conn
         if conn_sqlite is None:
+            # Utiliser db.local_conn (déjà connecté via init())
             conn_sqlite = db.local_conn
         if conn_pg is None or conn_sqlite is None:
-            msg = "take_teacher_data: connexion serveur ou locale manquante"
-            print(msg)
-            if log_fn:
-                log_fn(msg)
-            return False
+            # Essayer de se connecter à l'Intranet ou au Cloud
+            if db.connect_intranet():
+                conn_pg = db.server_conn
+            elif db.connect_cloud():
+                conn_pg = db.server_conn
+            else:
+                msg = "take_teacher_data: aucune connexion serveur disponible"
+                print(msg)
+                if log_fn:
+                    log_fn(msg)
+                return (False, msg)
 
         try:
             with conn_pg.cursor() as cur:
@@ -189,23 +238,25 @@ class SQLiteInit:
                 # Démarrer une transaction
                 cursor_sqlite.execute("BEGIN")
 
+                # Vider les tables avant d'insérer
+                cursor_sqlite.execute('DELETE FROM "larcauth_evaluation"')
+                cursor_sqlite.execute('DELETE FROM "larcauth_learnerpei_has_termsubjectpei"')
+                cursor_sqlite.execute('DELETE FROM "larcauth_learnerdp_has_termsubjectdp"')
+
                 # Table larcauth_evaluation
                 self._create_table_from_data(cursor_sqlite, 'larcauth_evaluation', eval_cols)
-                cursor_sqlite.execute('DELETE FROM "larcauth_evaluation"')
                 self._insert_rows_from_data(cursor_sqlite, 'larcauth_evaluation', eval_cols, eval_rows)
                 if log_fn:
                     log_fn("Table larcauth_evaluation mise à jour")
 
                 # Table larcauth_learnerpei_has_termsubjectpei
                 self._create_table_from_data(cursor_sqlite, 'larcauth_learnerpei_has_termsubjectpei', pei_cols)
-                cursor_sqlite.execute('DELETE FROM "larcauth_learnerpei_has_termsubjectpei"')
                 self._insert_rows_from_data(cursor_sqlite, 'larcauth_learnerpei_has_termsubjectpei', pei_cols, pei_rows)
                 if log_fn:
                     log_fn("Table larcauth_learnerpei_has_termsubjectpei mise à jour")
 
                 # Table larcauth_learnerdp_has_termsubjectdp
                 self._create_table_from_data(cursor_sqlite, 'larcauth_learnerdp_has_termsubjectdp', dp_cols)
-                cursor_sqlite.execute('DELETE FROM "larcauth_learnerdp_has_termsubjectdp"')
                 self._insert_rows_from_data(cursor_sqlite, 'larcauth_learnerdp_has_termsubjectdp', dp_cols, dp_rows)
                 if log_fn:
                     log_fn("Table larcauth_learnerdp_has_termsubjectdp mise à jour")
@@ -221,14 +272,14 @@ class SQLiteInit:
             print(msg)
             if log_fn:
                 log_fn(msg)
-            return True
+            return (True, '')
 
         except Exception as e:
             msg = f"Erreur take_teacher_data: {e}"
             print(msg)
             if log_fn:
                 log_fn(msg)
-            return False
+            return (False, msg)
 
     def _create_table_from_data(self, cursor, table_name: str, columns: list) -> None:
         """Crée une table avec des colonnes TEXT pour toutes les colonnes."""

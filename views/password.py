@@ -15,6 +15,62 @@ def _sha256_hex(s: str) -> str:
     return hashlib.sha256(s.encode('utf-8')).hexdigest()
 
 
+class ChangePinDialog(QDialog):
+    """Boîte de dialogue pour changer le PIN hors connexion."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle('Changer le PIN')
+        self.setMinimumWidth(350)
+        self.setModal(True)
+
+        layout = QVBoxLayout(self)
+        layout.setSpacing(12)
+
+        title = QLabel('Modification du PIN hors connexion')
+        title.setStyleSheet('font-size: 14px; font-weight: bold; color: #2c3e50;')
+        layout.addWidget(title)
+
+        form = QFormLayout()
+        form.setSpacing(8)
+
+        self._pin_edit = QLineEdit()
+        self._pin_edit.setEchoMode(QLineEdit.Password)
+        self._pin_edit.setPlaceholderText('Nouveau PIN (4-8 chiffres)')
+        self._pin_edit.setMaxLength(8)
+
+        form.addRow('Nouveau PIN :', self._pin_edit)
+
+        layout.addLayout(form)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(self._on_accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+        self._error_label = QLabel()
+        self._error_label.setStyleSheet('color: #c0392b; font-size: 11px;')
+        self._error_label.hide()
+        layout.addWidget(self._error_label)
+
+    def _on_accept(self) -> None:
+        new_pin = self._pin_edit.text().strip()
+        if not new_pin or not new_pin.isdigit() or len(new_pin) < 4 or len(new_pin) > 8:
+            self._show_error('Le PIN doit contenir 4 à 8 chiffres.')
+            return
+
+        # Mettre à jour le PIN dans la base locale
+        from common.sqlite_init import sqlite_init
+        from common.session import session
+        sqlite_init.save_session(session, new_pin)
+        QMessageBox.information(self, 'Succès', 'PIN mis à jour avec succès.')
+        self.accept()
+
+    def _show_error(self, msg: str) -> None:
+        self._error_label.setText(msg)
+        self._error_label.show()
+
+
 class ChangePasswordDialog(QDialog):
     """Boîte de dialogue pour changer le mot de passe Intranet."""
 
