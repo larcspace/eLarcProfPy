@@ -3,6 +3,7 @@ config.ini
 secrets.env
 elarc.db
 instance.ini
+SQLiteDB.db
 
 # Environnements virtuels
 .venv/
@@ -49,6 +50,7 @@ coverage.xml
 .vscode/
 .spyderproject
 .ropeproject
+.claude/
 
 # mypy / pytype / pyre
 .mypy_cache/
