@@ -1,6 +1,6 @@
 # eLarcProfPy — Contexte projet
 
-_Dernière mise à jour : 22 mai 2026_
+_Dernière mise à jour : 22 mai 2026 (décisions sync + notations + détection sans connexion)_
 
 ## Décision technique
 Version **Python/PySide6** retenue pour le desktop. Elle remplace la version Delphi (eLarcProf)
@@ -150,10 +150,16 @@ Le daemon de sync n'a jamais à vérifier si une ligne existe côté device —
 elle existe toujours. La sync ne fait que des **UPDATE**. Aucun conflit possible.
 
 ### Système de notation
-| Niveau | Échelle | Détail |
-|---|---|---|
-| Collège | 0–8 par critère | jusqu'à 7 critères par évaluation |
-| Lycée | 0–20 | note directe (en plus du système critères) |
+| Niveau | Périmètre | Échelle | Détail |
+|---|---|---|---|
+| Collège (PEI) | par critère | 0–8 | **4 critères** par évaluation (a, b, c, d) |
+| Collège (PEI) | synthèse trimestre/matière | 0–7 | 1 note finale par matière par trimestre |
+| Lycée (DP) | note directe | 0–20 | en plus du système critères |
+
+### Évaluations par trimestre
+- **12 formatives** + **12 sommatives** par matière par trimestre — règle métier (≈ 1 par semaine sur 12 semaines).
+- Les 12 slots sont toujours rendus dans l'IHM ; les lignes sans critère coché sont grisées/inactives.
+- Cette constante "12" vit dans le code IHM comme constante de présentation ; elle ne représente PAS une limite arbitraire à exposer ailleurs.
 
 ### Architecture SQLite device (2 niveaux)
 ```
@@ -173,13 +179,75 @@ C'est le principe fondamental : **schéma fixe → queries fixes → seules les 
 
 ---
 
+## Architecture de synchronisation device ↔ serveur
+
+### Pattern shadow-table (tables `_ref`)
+Chaque table métier du device a une **jumelle `_ref`** au schéma identique :
+
+| Table de travail | Table de référence |
+|---|---|
+| `larcauth_evaluation` | `larcauth_evaluation_ref` |
+| `larcauth_learnerpei_has_termsubjectpei` | `larcauth_learnerpei_has_termsubjectpei_ref` |
+| `larcauth_learnerdp_has_termsubjectdp` | `larcauth_learnerdp_has_termsubjectdp_ref` |
+
+- **Table de travail** = état local courant, modifié par les saisies du prof.
+- **Table `_ref`** = snapshot du dernier état serveur connu (acté à la dernière synchro réussie).
+- Au seed (`take_teacher_data`), les deux tables sont peuplées avec les mêmes données serveur.
+
+### Diff au niveau cellule
+Les lignes existent toujours des deux côtés (gabarit pré-alloué) → aucun INSERT/DELETE à détecter. Le diff est **cellule par cellule** : jointure par `id`, comparaison colonne par colonne.
+
+### Matrice de décision (par cellule, à la synchro)
+| local vs ref | serveur vs ref | Action |
+|---|---|---|
+| = | = | rien à faire |
+| = | ≠ | **pull** : `local = serveur`, `ref = serveur` |
+| ≠ | = | **push** : `serveur = local`, `ref = local` |
+| ≠ | ≠ | **conflit** → IHM de résolution |
+
+### Scope de la synchro
+- **Trimestre courant uniquement** : `WHERE term_id = module_config.trimestre_courant`.
+- **Trimestres passés figés** : aucune modification ni synchro acceptée — règle business stricte. Les cellules des trimestres antérieurs sont read-only dans l'IHM (grisées) et ignorées par le diff.
+
+### Déclencheurs de la synchro
+La synchro **n'est jamais automatique au démarrage**. Elle se déclenche uniquement :
+1. À la **création de l'instance** (mode 4) — seed initial : `local = ref = serveur`.
+2. Sur **clic explicite "Connecter"** dans l'onglet Intranet ou Cloud (puis flux de synchro).
+3. Sur **clic "Synchroniser"** depuis le tableau de bord (Phase 2).
+4. À la **sortie avec enregistrement** (Phase 2).
+
+Au démarrage, on **teste seulement la présence** réseau (intranet / internet) pour mettre à jour les indicateurs visuels — on ne se connecte pas.
+
+### Conflits (cas 4 de la matrice)
+- Rares en pratique (saisie simultanée prof / coord sur la même cellule).
+- Possibles **uniquement sur le trimestre en cours**.
+- Présentés via une IHM dédiée (Phase 2) qui liste les cellules en conflit et permet au prof de trancher cellule par cellule.
+
+### État de synchro par table — table `sync_state`
+```sql
+CREATE TABLE sync_state (
+    table_name  TEXT PRIMARY KEY,   -- nom de la table métier (sans suffixe _ref)
+    last_sync   TEXT,               -- ISO 8601 ; NULL = jamais synchro
+    last_source TEXT                -- 'intranet' ou 'cloud' (diagnostic)
+);
+```
+Un timestamp par table, mis à jour à la fin de chaque synchro réussie pour cette table.
+
+### Le daemon serveur n'est pas concerné
+Toute cette logique vit côté device. Le daemon Python qui synchronise intranet ↔ cloud continue son boulot sans modification — il ne sait rien des tables `_ref` ni du diff cellule local.
+
+---
+
 ## Règles métier importantes
 - **Ne jamais DELETE** — désactivation logique via `enabled = FALSE`
-- **Avant tout UPDATE** : `SET LOCAL app.sync_source = 'intranet'` + `SET LOCAL app.modified_by = <user_id>`
+- **Avant tout UPDATE serveur** : `SET LOCAL app.sync_source = 'intranet'` + `SET LOCAL app.modified_by = <user_id>`
+- **Trimestres passés en lecture seule** — la synchro ne touche que `term_id = trimestre_courant`
+- **Démarrage = test de présence réseau seulement**, pas de connexion auto
 - Le daemon Python de sync intranet ↔ cloud tourne séparément — **ne jamais le modifier**
 - Schéma PostgreSQL de référence : `C:\Projets\eLarcProf\Data\LarcNewCloud.sql`
 - Tables clés auth : `larcauth_aecuser`, `larcauth_teachadm`, `larcib_term`
-- Tables sync : `sync_log`, `sync_table_config`
+- Tables sync serveur : `sync_log`, `sync_table_config`
+- Tables sync device : tables métier × 2 (avec `_ref`) + `sync_state`
 
 ## Synchronisation Double Verrou
 Chaque table a `sync_revision` (bigint, auto-incrémenté par trigger).

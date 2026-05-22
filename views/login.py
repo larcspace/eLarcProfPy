@@ -88,7 +88,6 @@ class LoginWindow(QMainWindow):
         super().__init__()
         self._worker:       Optional[_Worker] = None
         self._net_mode:     Optional[NetworkMode] = None
-        self._auto_connect_done: bool = False  # ← nouveau
         self._setup_ui()
         self._start_net_detection()
 
@@ -414,46 +413,12 @@ class LoginWindow(QMainWindow):
                 ConnMode.OFFLINE
             )
 
-        # Connexion automatique une seule fois au démarrage
-        if not self._auto_connect_done:
-            self._auto_connect_done = True
-            self._auto_connect(mode)
+        # Pas de connexion automatique au démarrage : on se contente de tester
+        # la présence réseau (intranet/cloud) pour mettre à jour les indicateurs.
+        # La connexion est déclenchée explicitement par l'utilisateur (clic Intranet,
+        # Cloud, ou Nouvelle instance / mode 4). Cf. CONTEXT.md, section
+        # "Architecture de synchronisation" → "Déclencheurs de la synchro".
 
-
-    def _auto_connect(self, mode: NetworkMode) -> None:
-        # Priorité : Intranet > Cloud > Device
-        self._set_busy(True)
-        self._log('Tentative de connexion à l\'Intranet…')
-        self._worker = _Worker(db.connect_intranet, parent=self)
-        self._worker.done.connect(
-            lambda ok: self._on_auto_connect_result(ok, mode)
-        )
-        self._worker.start()
-
-    def _on_auto_connect_result(self, ok: bool, mode: NetworkMode) -> None:
-        if ok:
-            self._set_busy(False)
-            # Ne pas afficher "Connecté à l'Intranet" car l'utilisateur n'est pas authentifié
-            return
-        # Intranet échoué, essayer le Cloud
-        self._log('Intranet indisponible, tentative de connexion au Cloud…')
-        self._worker = _Worker(db.connect_cloud, parent=self)
-        self._worker.done.connect(
-            lambda ok2: self._on_cloud_connect_result(ok2, mode)
-        )
-        self._worker.start()
-
-    def _on_cloud_connect_result(self, ok: bool, mode: NetworkMode) -> None:
-        if ok:
-            self._set_busy(False)
-            # Ne pas afficher "Connecté au Cloud" car l'utilisateur n'est pas authentifié
-            return
-        # Cloud échoué, passer en mode device (hors connexion)
-        self._set_busy(False)
-        self._log('Aucune connexion serveur disponible. Passage en mode hors connexion.')
-        if not sqlite_init.init():
-            self._show_error('Impossible d\'initialiser la base locale.')
-            return
 
     def _update_indicators(self, intranet: bool, cloud: bool) -> None:
         """Met à jour les feux Intranet et Cloud."""

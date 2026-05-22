@@ -38,7 +38,25 @@ CREATE TABLE IF NOT EXISTS module_config (
     derniere_synchronisation TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+CREATE TABLE IF NOT EXISTS sync_state (
+    table_name  TEXT PRIMARY KEY,
+    last_sync   TEXT,
+    last_source TEXT
+);
+
 CREATE TABLE IF NOT EXISTS larcauth_evaluation (
+    id INTEGER PRIMARY KEY,
+    fk_classroom_termsubject_id INTEGER,
+    fk_student_id INTEGER,
+    evaluation_type TEXT,
+    evaluation_date TEXT,
+    score REAL,
+    comment TEXT,
+    created_at TEXT,
+    updated_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS larcauth_evaluation_ref (
     id INTEGER PRIMARY KEY,
     fk_classroom_termsubject_id INTEGER,
     fk_student_id INTEGER,
@@ -59,6 +77,15 @@ CREATE TABLE IF NOT EXISTS larcauth_learnerpei_has_termsubjectpei (
     updated_at TEXT
 );
 
+CREATE TABLE IF NOT EXISTS larcauth_learnerpei_has_termsubjectpei_ref (
+    id INTEGER PRIMARY KEY,
+    learner_has_termsubject_ptr_id INTEGER,
+    fk_pei_id INTEGER,
+    fk_termsubjectpei_id INTEGER,
+    created_at TEXT,
+    updated_at TEXT
+);
+
 CREATE TABLE IF NOT EXISTS larcauth_learnerdp_has_termsubjectdp (
     id INTEGER PRIMARY KEY,
     learner_has_termsubject_ptr_id INTEGER,
@@ -67,7 +94,23 @@ CREATE TABLE IF NOT EXISTS larcauth_learnerdp_has_termsubjectdp (
     created_at TEXT,
     updated_at TEXT
 );
+
+CREATE TABLE IF NOT EXISTS larcauth_learnerdp_has_termsubjectdp_ref (
+    id INTEGER PRIMARY KEY,
+    learner_has_termsubject_ptr_id INTEGER,
+    fk_dp_id INTEGER,
+    fk_termsubjectdp_id INTEGER,
+    created_at TEXT,
+    updated_at TEXT
+);
 """
+
+# Tables métier (sans suffixe _ref) — utilisé par take_teacher_data + sync
+BUSINESS_TABLES = (
+    'larcauth_evaluation',
+    'larcauth_learnerpei_has_termsubjectpei',
+    'larcauth_learnerdp_has_termsubjectdp',
+)
 
 
 class SQLiteInit:
@@ -316,28 +359,25 @@ class SQLiteInit:
                 # Démarrer une transaction
                 cursor_sqlite.execute("BEGIN")
 
-                # Vider les tables avant d'insérer
-                cursor_sqlite.execute('DELETE FROM "larcauth_evaluation"')
-                cursor_sqlite.execute('DELETE FROM "larcauth_learnerpei_has_termsubjectpei"')
-                cursor_sqlite.execute('DELETE FROM "larcauth_learnerdp_has_termsubjectdp"')
+                # Vider toutes les tables (travail + référence) avant d'insérer
+                for t in BUSINESS_TABLES:
+                    cursor_sqlite.execute(f'DELETE FROM "{t}"')
+                    cursor_sqlite.execute(f'DELETE FROM "{t}_ref"')
 
-                # Table larcauth_evaluation
-                self._create_table_from_data(cursor_sqlite, 'larcauth_evaluation', eval_cols)
-                self._insert_rows_from_data(cursor_sqlite, 'larcauth_evaluation', eval_cols, eval_rows)
-                if log_fn:
-                    log_fn("Table larcauth_evaluation mise à jour")
+                # Helper : peupler une paire (table, table_ref) avec les mêmes données serveur
+                # et mettre à jour sync_state pour cette table.
+                def _seed_pair(table_name: str, cols: list, rows: list) -> None:
+                    self._create_table_from_data(cursor_sqlite, table_name, cols)
+                    self._insert_rows_from_data(cursor_sqlite, table_name, cols, rows)
+                    self._create_table_from_data(cursor_sqlite, f'{table_name}_ref', cols)
+                    self._insert_rows_from_data(cursor_sqlite, f'{table_name}_ref', cols, rows)
+                    self._touch_sync_state(cursor_sqlite, table_name)
+                    if log_fn:
+                        log_fn(f"Paire ({table_name}, {table_name}_ref) seedée et sync_state mis à jour")
 
-                # Table larcauth_learnerpei_has_termsubjectpei
-                self._create_table_from_data(cursor_sqlite, 'larcauth_learnerpei_has_termsubjectpei', pei_cols)
-                self._insert_rows_from_data(cursor_sqlite, 'larcauth_learnerpei_has_termsubjectpei', pei_cols, pei_rows)
-                if log_fn:
-                    log_fn("Table larcauth_learnerpei_has_termsubjectpei mise à jour")
-
-                # Table larcauth_learnerdp_has_termsubjectdp
-                self._create_table_from_data(cursor_sqlite, 'larcauth_learnerdp_has_termsubjectdp', dp_cols)
-                self._insert_rows_from_data(cursor_sqlite, 'larcauth_learnerdp_has_termsubjectdp', dp_cols, dp_rows)
-                if log_fn:
-                    log_fn("Table larcauth_learnerdp_has_termsubjectdp mise à jour")
+                _seed_pair('larcauth_evaluation', eval_cols, eval_rows)
+                _seed_pair('larcauth_learnerpei_has_termsubjectpei', pei_cols, pei_rows)
+                _seed_pair('larcauth_learnerdp_has_termsubjectdp', dp_cols, dp_rows)
 
                 conn_sqlite.commit()
             except Exception:
@@ -378,6 +418,19 @@ class SQLiteInit:
             if log_fn:
                 log_fn(msg)
             return (False, msg)
+
+    def _touch_sync_state(self, cursor, table_name: str) -> None:
+        """Met à jour sync_state.last_sync = now() et last_source pour une table métier."""
+        from .database import db as _db, DBMode
+        source = 'intranet' if _db.mode == DBMode.INTRANET else 'cloud' if _db.mode == DBMode.CLOUD else 'unknown'
+        cursor.execute(
+            """INSERT INTO sync_state (table_name, last_sync, last_source)
+               VALUES (?, datetime('now'), ?)
+               ON CONFLICT(table_name) DO UPDATE SET
+                   last_sync   = excluded.last_sync,
+                   last_source = excluded.last_source""",
+            (table_name, source)
+        )
 
     def _create_table_from_data(self, cursor, table_name: str, columns: list) -> None:
         """Crée une table avec des colonnes TEXT pour toutes les colonnes."""
@@ -460,10 +513,14 @@ class SQLiteInit:
         required_tables = [
             'session_cache',
             'sync_cursor',
+            'sync_state',
             'module_config',
             'larcauth_evaluation',
+            'larcauth_evaluation_ref',
             'larcauth_learnerpei_has_termsubjectpei',
+            'larcauth_learnerpei_has_termsubjectpei_ref',
             'larcauth_learnerdp_has_termsubjectdp',
+            'larcauth_learnerdp_has_termsubjectdp_ref',
         ]
 
         cursor = conn.cursor()
