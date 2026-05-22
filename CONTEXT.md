@@ -152,14 +152,37 @@ elle existe toujours. La sync ne fait que des **UPDATE**. Aucun conflit possible
 ### Système de notation
 | Niveau | Périmètre | Échelle | Détail |
 |---|---|---|---|
-| Collège (PEI) | par critère | 0–8 | **4 critères** par évaluation (a, b, c, d) |
-| Collège (PEI) | synthèse trimestre/matière | 0–7 | 1 note finale par matière par trimestre |
-| Lycée (DP) | note directe | 0–20 | en plus du système critères |
+| Collège (PEI) | par critère | 0–8 | **4 critères** affichés (a, b, c, d) — colonne `note_on_7` pour la synthèse |
+| Collège (PEI) | synthèse trimestre/matière | 0–7 | 1 note finale par matière par trimestre (`note_on_7`) |
+| Lycée (DP) | note directe | 0–20 | `moy_on_20`, `cc_on_20`, `bacblanc`, `bacblanc2` — en plus du système critères |
 
 ### Évaluations par trimestre
-- **12 formatives** + **12 sommatives** par matière par trimestre — règle métier (≈ 1 par semaine sur 12 semaines).
+- **12 formatives** + **12 sommatives** par matière par trimestre exposées à l'IHM — règle métier (≈ 1/semaine sur 12 semaines).
 - Les 12 slots sont toujours rendus dans l'IHM ; les lignes sans critère coché sont grisées/inactives.
-- Cette constante "12" vit dans le code IHM comme constante de présentation ; elle ne représente PAS une limite arbitraire à exposer ailleurs.
+
+### Décalage base ⟷ IHM v1 (à connaître absolument)
+Le schéma serveur a une capacité supérieure à ce que l'IHM v1 expose. Ces "extras" sont **réservés en base** pour des usages futurs, sans modification de schéma :
+
+| Sujet | Base | IHM v1 | Réserve pour |
+|---|---|---|---|
+| Critères par évaluation | 6 colonnes (`crit_a..crit_e`, `crit_F`) | 4 (a, b, c, d) | Évolutions du logiciel (v2+), pas de migration DDL |
+| Slots formatives / sommatives | 15 (`f01..f15`, `s01..s15`) | 12 (`f01..f12`, `s01..s12`) | Calculs statistiques récurrents (moyennes, etc.) |
+| Aspects par critère | 7 (`aspect_a1..a7`, …) | 0 | Version 2 — "éléments de contenu" des critères |
+
+**Convention de nommage des colonnes notes** (côté `larcauth_learnerpei_has_termsubjectpei` et `larcauth_learnerdp_has_termsubjectdp`) :
+
+```
+formatives :  f01_note_a, f01_note_b, f01_note_c, f01_note_d   (a..d uniquement en v1)
+              f02_note_a … f12_note_d
+sommatives :  s01_note_a … s12_note_d
+synthèse    :  note_on_7 (PEI)  ou  moy_on_20 (DP)
+observation :  fXX_observation, sXX_observation, cp_observation, term_observation
+jugement    :  jgt_a..jgt_d
+```
+
+### Particularités à connaître
+- **Bug schéma serveur** : la colonne `S09_note_f` est en majuscule (vs `s09_note_f` attendu). Non corrigée car l'attribut n'est pas encore utilisé. À ignorer pour l'IHM v1 (n'expose pas `_f`).
+- **`crit_F`** : également en majuscule isolée. Même statut — non exposé en v1, donc sans impact.
 
 ### Architecture SQLite device (2 niveaux)
 ```
