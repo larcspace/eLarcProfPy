@@ -66,3 +66,7 @@ pip-log.txt
 *.manifest
 .ruff_cache/
 .aider*
+
+# Notes de réflexion (discussions, brouillons)
+Reflexion*.txt
+Reflexion*.html
