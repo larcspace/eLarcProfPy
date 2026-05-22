@@ -9,3 +9,11 @@
 2026-05-21 10:15:00 - Besoin d'information : "Modifier common\sqlite_init.py pour remplacer init_cloud() par une version fonctionnelle" - [EN ATTENTE]
 2026-05-22 11:00:00 - Demande : "Analyser CONTEXT.md, le répertoire docs et historique_demandes pour faire un état du code" - [TERMINÉ]
 2026-05-22 11:15:00 - Demande : "Mettre à jour CONTEXT.md (retrait des dimensions du gabarit, refresh architecture), la documentation /docs (PyQt5 → PySide6, ajout password.py et logger.py) et nettoyer historique_demandes.txt" - [TERMINÉ]
+2026-05-22 13:30:00 - Discussion : "Réflexion sur la suite du programme — espace de travail PEI, scénario intranet présent" (reflexion_1.txt) - [TERMINÉ]
+2026-05-22 14:00:00 - Décisions architecturales : "4 critères par évaluation (au lieu de 7), 0-7 synthèse trimestre, 0-20 DP lycée, 12 formatives + 12 sommatives comme constante de présentation" - [TERMINÉ]
+2026-05-22 14:15:00 - Décision sync : "Pattern shadow-table (table + table_ref), diff au niveau cellule, matrice de décision à 4 cas, scope trimestre courant, trimestres passés figés, déclencheurs explicites (pas d'auto-connect au démarrage)" - [TERMINÉ]
+2026-05-22 14:30:00 - Demande : "Mise à jour CONTEXT.md (notations, sync architecture), ajout 3 tables _ref + sync_state au DDL, take_teacher_data peuple les paires, squelette common/sync.py, retrait _auto_connect de views/login.py" - [TERMINÉ] (commit e0b1082)
+2026-05-22 15:00:00 - Demande : "Ignorer les fichiers Reflexion*.txt et Reflexion*.html via .gitignore" - [TERMINÉ] (commit 0ef82ef)
+2026-05-22 15:15:00 - Demande : "Tester --test-create-db avec le nouveau DDL" - [TERMINÉ] (10 tables créées et vérifiées en base temporaire)
+2026-05-22 15:20:00 - Constat : "elarc.db existante a sync_state au schéma legacy (sync_table_name/sync_last_id/sync_updated_at, 3 lignes dummy N1/N2/N3) incompatible avec le nouveau schéma" - [TERMINÉ] (table legacy droppée)
+2026-05-22 15:25:00 - Demande : "Rejouer un mode 4 pour resynchroniser les _ref sur elarc.db" - [TERMINÉ] (189 eval + 111 PEI alignés local/ref, sync_state mis à jour, 3 lignes intranet)
