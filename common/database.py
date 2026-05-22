@@ -11,6 +11,8 @@ except ImportError:
     _PG_OK = False
 
 
+from .logger import log as _log
+
 def _find_cfg() -> str:
     here = os.path.dirname(os.path.abspath(__file__))
     candidates = [
@@ -21,6 +23,9 @@ def _find_cfg() -> str:
         p = os.path.normpath(p)
         if os.path.isfile(p):
             return p
+    # Aucun fichier trouvé, retourner le premier candidat (qui n'existe pas)
+    _log("AVERTISSEMENT : config.ini introuvable. Utilisation des valeurs par défaut.")
+    print("AVERTISSEMENT : config.ini introuvable. Utilisation des valeurs par défaut.")
     return os.path.normpath(candidates[0])
 
 
@@ -55,29 +60,53 @@ class Database:
 
     def connect_intranet(self) -> bool:
         if not _PG_OK:
+            _log("connect_intranet: psycopg2 non installé")
+            print("connect_intranet: psycopg2 non installé")
             return False
         try:
             if self._intranet:
                 self._intranet.close()
-            self._intranet = psycopg2.connect(**self._pg_params('IntranetDatabase'))
+            params = self._pg_params('IntranetDatabase')
+            msg = (f"connect_intranet: tentative de connexion à {params['host']}:{params['port']}/{params['dbname']} "
+                   f"utilisateur={params['user']}")
+            _log(msg)
+            print(msg)
+            self._intranet = psycopg2.connect(**params)
             self._intranet.autocommit = True
             self._mode = DBMode.INTRANET
+            _log("connect_intranet: connexion réussie")
+            print("connect_intranet: connexion réussie")
             return True
-        except Exception:
+        except Exception as e:
+            msg = f"connect_intranet: échec : {e}"
+            _log(msg)
+            print(msg)
             self._mode = DBMode.NONE
             return False
 
     def connect_cloud(self) -> bool:
         if not _PG_OK:
+            _log("connect_cloud: psycopg2 non installé")
+            print("connect_cloud: psycopg2 non installé")
             return False
         try:
             if self._cloud:
                 self._cloud.close()
-            self._cloud = psycopg2.connect(**self._pg_params('SupabaseDatabase'))
+            params = self._pg_params('SupabaseDatabase')
+            msg = (f"connect_cloud: tentative de connexion à {params['host']}:{params['port']}/{params['dbname']} "
+                   f"utilisateur={params['user']}")
+            _log(msg)
+            print(msg)
+            self._cloud = psycopg2.connect(**params)
             self._cloud.autocommit = True
             self._mode = DBMode.CLOUD
+            _log("connect_cloud: connexion réussie")
+            print("connect_cloud: connexion réussie")
             return True
-        except Exception:
+        except Exception as e:
+            msg = f"connect_cloud: échec : {e}"
+            _log(msg)
+            print(msg)
             self._mode = DBMode.NONE
             return False
 
@@ -138,6 +167,17 @@ class Database:
     @property
     def mode(self) -> DBMode:
         return self._mode
+
+    @property
+    def is_server_connected(self) -> bool:
+        return self.server_conn is not None
+
+    def get_sqlalchemy_url(self, section: str = 'IntranetDatabase') -> str:
+        """Retourne une URL de connexion SQLAlchemy pour la section donnée."""
+        params = self._pg_params(section)
+        # Format : postgresql+psycopg2://user:password@host:port/dbname
+        return (f"postgresql+psycopg2://{params['user']}:{params['password']}"
+                f"@{params['host']}:{params['port']}/{params['dbname']}")
 
     def __del__(self) -> None:
         self.disconnect_all()

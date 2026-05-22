@@ -12,20 +12,7 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 from typing import Tuple
 
 from .session import AuthResult, UserRole
-from .database import db, DBMode
-
-
-def _find_cfg() -> str:
-    here = os.path.dirname(os.path.abspath(__file__))
-    candidates = [
-        os.path.join(here, '..', 'config.ini'),
-        os.path.join(here, '..', '..', 'eLarcProf', 'config.ini'),
-    ]
-    for p in candidates:
-        p = os.path.normpath(p)
-        if os.path.isfile(p):
-            return p
-    return os.path.normpath(candidates[0])
+from .database import db, DBMode, _find_cfg
 
 
 def _sha256_hex(s: str) -> str:

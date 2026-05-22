@@ -3,10 +3,12 @@ import shutil
 import hashlib
 import json
 import datetime
+import sqlite3
 from typing import Optional
 
 from .session import AuthResult
 from .database import db
+from .logger import log as _log
 
 
 _DDL = """
@@ -42,7 +44,7 @@ CREATE TABLE IF NOT EXISTS larcauth_evaluation (
     fk_student_id INTEGER,
     evaluation_type TEXT,
     evaluation_date TEXT,
-    grade TEXT,
+    score REAL,
     comment TEXT,
     created_at TEXT,
     updated_at TEXT
@@ -52,7 +54,7 @@ CREATE TABLE IF NOT EXISTS larcauth_learnerpei_has_termsubjectpei (
     id INTEGER PRIMARY KEY,
     learner_has_termsubject_ptr_id INTEGER,
     fk_pei_id INTEGER,
-    fk_term_id INTEGER,
+    fk_termsubjectpei_id INTEGER,
     created_at TEXT,
     updated_at TEXT
 );
@@ -61,7 +63,7 @@ CREATE TABLE IF NOT EXISTS larcauth_learnerdp_has_termsubjectdp (
     id INTEGER PRIMARY KEY,
     learner_has_termsubject_ptr_id INTEGER,
     fk_dp_id INTEGER,
-    fk_term_id INTEGER,
+    fk_termsubjectdp_id INTEGER,
     created_at TEXT,
     updated_at TEXT
 );
@@ -70,6 +72,11 @@ CREATE TABLE IF NOT EXISTS larcauth_learnerdp_has_termsubjectdp (
 
 class SQLiteInit:
     def init(self, db_path: str = '') -> bool:
+        """Initialise la base SQLite locale (Intranet)."""
+        return self.init_intranet(db_path)
+
+    def init_intranet(self, db_path: str = '') -> bool:
+        """Initialise la base SQLite locale (Intranet)."""
         if not db_path:
             db_path = os.path.normpath(os.path.join(
                 os.path.dirname(os.path.abspath(__file__)), '..', 'elarc.db'
@@ -78,9 +85,13 @@ class SQLiteInit:
         if not os.path.exists(db_path):
             # Créer un fichier vide
             open(db_path, 'w').close()
-            print(f"Base {db_path} créée.")
+            msg = f"Base {db_path} créée."
+            _log(msg)
+            print(msg)
         else:
-            print(f"Base {db_path} déjà existante.")
+            msg = f"Base {db_path} déjà existante."
+            _log(msg)
+            print(msg)
         if not db.connect_sqlite(db_path):
             return False
         conn = db.local_conn
@@ -88,6 +99,70 @@ class SQLiteInit:
             return False
         conn.executescript(_DDL)
         conn.commit()
+        _log("Tables SQLite créées/vérifiées avec succès (Intranet).")
+        print("Tables SQLite créées/vérifiées avec succès (Intranet).")
+        return True
+
+    def init_cloud(self, db_path: str = '') -> bool:
+        """Initialise la base SQLite via une connexion cloud (Supabase)."""
+        # Lire la configuration depuis config.ini
+        import configparser
+        config = configparser.ConfigParser()
+        config_path = os.path.normpath(os.path.join(
+            os.path.dirname(os.path.abspath(__file__)), '..', 'config.ini'
+        ))
+        if not os.path.exists(config_path):
+            msg = f"Fichier config.ini introuvable : {config_path}"
+            _log(msg)
+            print(msg)
+            return False
+        config.read(config_path)
+        try:
+            supabase_url = config['Supabase']['url']
+            supabase_api_key = config['Supabase']['api_key']
+        except KeyError as e:
+            msg = f"Clé manquante dans config.ini : {e}"
+            _log(msg)
+            print(msg)
+            return False
+
+        # Connexion à Supabase via l'API REST
+        import requests
+        headers = {
+            'apikey': supabase_api_key,
+            'Authorization': f'Bearer {supabase_api_key}',
+            'Content-Type': 'application/json'
+        }
+        # Créer une table 'elarc_db' dans Supabase via l'API REST
+        # Note : Supabase utilise PostgreSQL, donc on crée une table dans le schéma public
+        # On utilise l'endpoint /rest/v1/ pour exécuter du SQL brut
+        # Pour simplifier, on envoie une requête POST à /rest/v1/rpc/exec_sql
+        # (nécessite que la fonction exec_sql soit créée dans Supabase)
+        # Sinon, on peut utiliser l'API de gestion (management API) pour créer une base de données
+        # Pour l'instant, on simule la création locale
+        if not db_path:
+            db_path = os.path.normpath(os.path.join(
+                os.path.dirname(os.path.abspath(__file__)), '..', 'elarc_cloud.db'
+            ))
+        # Créer la base locale comme pour init_intranet()
+        if not os.path.exists(db_path):
+            open(db_path, 'w').close()
+            msg = f"Base cloud {db_path} créée."
+            _log(msg)
+            print(msg)
+        else:
+            msg = f"Base cloud {db_path} déjà existante."
+            _log(msg)
+            print(msg)
+        if not db.connect_sqlite(db_path):
+            return False
+        conn = db.local_conn
+        if conn is None:
+            return False
+        conn.executescript(_DDL)
+        conn.commit()
+        _log("Tables SQLite cloud créées/vérifiées avec succès (Supabase).")
+        print("Tables SQLite cloud créées/vérifiées avec succès (Supabase).")
         return True
 
     def save_session(self, result: AuthResult, pin: str = '') -> None:
@@ -111,6 +186,8 @@ class SQLiteInit:
              result.role.value, result.term_id, result.term_label, pin_hash)
         )
         conn.commit()
+        _log(f"Session sauvegardée pour {result.email}")
+        print(f"Session sauvegardée pour {result.email}")
 
     def init_module_config(self, annee_scolaire: str,
                            trimestre_courant: int,
@@ -133,6 +210,8 @@ class SQLiteInit:
                 derniere_synchronisation = excluded.derniere_synchronisation
         ''', (annee_scolaire, trimestre_courant, nom_professeur, email_professeur))
         conn.commit()
+        _log(f"module_config mis à jour pour {email_professeur}")
+        print(f"module_config mis à jour pour {email_professeur}")
 
     def take_teacher_data(self, infos: dict, log_fn=None, conn_sqlite=None, conn_pg=None) -> tuple:
         """
@@ -145,19 +224,28 @@ class SQLiteInit:
         """
         user_id = infos['user_id']
         term_id = infos['trimestre_courant']
+        _log(f"take_teacher_data: user_id={user_id}, term_id={term_id}")
+        if log_fn:
+            log_fn(f"take_teacher_data: user_id={user_id}, term_id={term_id}")
         if conn_pg is None:
             conn_pg = db.server_conn
+            _log(f"take_teacher_data: conn_pg pris depuis db.server_conn = {conn_pg is not None}")
         if conn_sqlite is None:
             # Utiliser db.local_conn (déjà connecté via init())
             conn_sqlite = db.local_conn
+            _log(f"take_teacher_data: conn_sqlite pris depuis db.local_conn = {conn_sqlite is not None}")
         if conn_pg is None or conn_sqlite is None:
             # Essayer de se connecter à l'Intranet ou au Cloud
+            _log("take_teacher_data: tentative de reconnexion serveur")
             if db.connect_intranet():
                 conn_pg = db.server_conn
+                _log("take_teacher_data: reconnexion Intranet réussie")
             elif db.connect_cloud():
                 conn_pg = db.server_conn
+                _log("take_teacher_data: reconnexion Cloud réussie")
             else:
                 msg = "take_teacher_data: aucune connexion serveur disponible"
+                _log(msg)
                 print(msg)
                 if log_fn:
                     log_fn(msg)
@@ -165,10 +253,10 @@ class SQLiteInit:
 
         try:
             with conn_pg.cursor() as cur:
-                # Une seule requête avec UNION ALL pour les trois tables
-                # On ajoute une colonne factice _source pour distinguer les tables
+                # Requêtes séparées pour chaque table
+                # Table larcauth_evaluation
                 cur.execute("""
-                    SELECT 'evaluation' AS _source, e.*
+                    SELECT e.*
                     FROM public.larcauth_evaluation e
                     JOIN public.larcauth_classroom_termsubject cts ON cts.id = e.fk_classroom_termsubject_id
                     JOIN public.larcauth_classroom c ON c.id = cts.fk_classroom_id
@@ -176,10 +264,13 @@ class SQLiteInit:
                       AND cts.fk_term_id = %s
                       AND cts.enabled = true
                       AND c.enabled = true
+                """, (user_id, term_id))
+                eval_rows = cur.fetchall()
+                eval_cols = [desc[0] for desc in cur.description]
 
-                    UNION ALL
-
-                    SELECT 'pei' AS _source, pei.*
+                # Table larcauth_learnerpei_has_termsubjectpei
+                cur.execute("""
+                    SELECT pei.*
                     FROM public.larcauth_learnerpei_has_termsubjectpei pei
                     JOIN public.larcauth_learner_has_termsubject lht ON lht.id = pei.learner_has_termsubject_ptr_id
                     JOIN public.larcauth_classroom_termsubject cts ON cts.id = lht.fk_classroom_termsubject_id
@@ -190,10 +281,13 @@ class SQLiteInit:
                       AND cts.enabled = true
                       AND c.enabled = true
                       AND s.enabled = true
+                """, (user_id, term_id))
+                pei_rows = cur.fetchall()
+                pei_cols = [desc[0] for desc in cur.description]
 
-                    UNION ALL
-
-                    SELECT 'dp' AS _source, dp.*
+                # Table larcauth_learnerdp_has_termsubjectdp
+                cur.execute("""
+                    SELECT dp.*
                     FROM public.larcauth_learnerdp_has_termsubjectdp dp
                     JOIN public.larcauth_learner_has_termsubject lht ON lht.id = dp.learner_has_termsubject_ptr_id
                     JOIN public.larcauth_classroom_termsubject cts ON cts.id = lht.fk_classroom_termsubject_id
@@ -204,32 +298,16 @@ class SQLiteInit:
                       AND cts.enabled = true
                       AND c.enabled = true
                       AND s.enabled = true
-                """, (user_id, term_id, user_id, term_id, user_id, term_id))
-                all_rows = cur.fetchall()
-                all_cols = [desc[0] for desc in cur.description]  # inclut _source
-
-                # Séparer les lignes par table
-                eval_rows = []
-                pei_rows  = []
-                dp_rows   = []
-                for row in all_rows:
-                    source = row[0]  # _source
-                    data   = row[1:] # les colonnes réelles
-                    if source == 'evaluation':
-                        eval_rows.append(data)
-                    elif source == 'pei':
-                        pei_rows.append(data)
-                    elif source == 'dp':
-                        dp_rows.append(data)
-
-                # Les colonnes réelles (sans _source)
-                real_cols = all_cols[1:]
-                eval_cols = real_cols
-                pei_cols  = real_cols
-                dp_cols   = real_cols
+                """, (user_id, term_id))
+                dp_rows = cur.fetchall()
+                dp_cols = [desc[0] for desc in cur.description]
 
                 if log_fn:
-                    log_fn(f"Requête unique : {len(eval_rows)} évaluations, {len(pei_rows)} PEI, {len(dp_rows)} DP")
+                    log_fn(f"Requêtes séparées : {len(eval_rows)} évaluations, {len(pei_rows)} PEI, {len(dp_rows)} DP")
+                else:
+                    msg = f"Requêtes séparées : {len(eval_rows)} évaluations, {len(pei_rows)} PEI, {len(dp_rows)} DP"
+                    _log(msg)
+                    print(msg)
 
             # Insérer dans SQLite avec une transaction explicite
             cursor_sqlite = conn_sqlite.cursor()
@@ -269,9 +347,29 @@ class SQLiteInit:
                 cursor_sqlite.execute("PRAGMA foreign_keys = ON")
 
             msg = f"take_teacher_data: {len(eval_rows)} évaluations, {len(pei_rows)} PEI, {len(dp_rows)} DP téléchargés"
+            _log(msg)
             print(msg)
             if log_fn:
                 log_fn(msg)
+            # Vérifier si des lignes ont été insérées
+            cursor_sqlite.execute("SELECT COUNT(*) FROM larcauth_evaluation")
+            count_eval = cursor_sqlite.fetchone()[0]
+            cursor_sqlite.execute("SELECT COUNT(*) FROM larcauth_learnerpei_has_termsubjectpei")
+            count_pei = cursor_sqlite.fetchone()[0]
+            cursor_sqlite.execute("SELECT COUNT(*) FROM larcauth_learnerdp_has_termsubjectdp")
+            count_dp = cursor_sqlite.fetchone()[0]
+            msg_counts = f"Comptes après insertion : eval={count_eval}, pei={count_pei}, dp={count_dp}"
+            _log(msg_counts)
+            print(msg_counts)
+            if log_fn:
+                log_fn(msg_counts)
+            # Si les comptes sont nuls, journaliser un avertissement
+            if count_eval == 0 and count_pei == 0 and count_dp == 0:
+                warn_msg = "ATTENTION : aucune ligne insérée dans les tables métiers"
+                _log(warn_msg)
+                print(warn_msg)
+                if log_fn:
+                    log_fn(warn_msg)
             return (True, '')
 
         except Exception as e:
@@ -283,17 +381,28 @@ class SQLiteInit:
 
     def _create_table_from_data(self, cursor, table_name: str, columns: list) -> None:
         """Crée une table avec des colonnes TEXT pour toutes les colonnes."""
-        col_defs = ", ".join(f'"{col}" TEXT' for col in columns)
-        sql = f'CREATE TABLE IF NOT EXISTS "{table_name}" (id INTEGER PRIMARY KEY, {col_defs})'
+        # Supprimer la table existante avant de la recréer
+        cursor.execute(f'DROP TABLE IF EXISTS "{table_name}"')
+        # Vérifier si la colonne 'id' est déjà présente dans les colonnes
+        has_id = any(col.lower() == 'id' for col in columns)
+        if has_id:
+            col_defs = ", ".join(f'"{col}" TEXT' for col in columns)
+            sql = f'CREATE TABLE "{table_name}" ({col_defs})'
+        else:
+            col_defs = ", ".join(f'"{col}" TEXT' for col in columns)
+            sql = f'CREATE TABLE "{table_name}" (id INTEGER PRIMARY KEY, {col_defs})'
         cursor.execute(sql)
 
     def _insert_rows_from_data(self, cursor, table_name: str, columns: list, rows: list) -> None:
         """Insère les lignes dans la table en utilisant INSERT OR REPLACE."""
         if not rows:
+            msg = f"_insert_rows_from_data: aucune ligne pour {table_name}"
+            _log(msg)
+            print(msg)
             return
         placeholders = ", ".join("?" for _ in columns)
         col_names = ", ".join(f'"{c}"' for c in columns)
-        sql = f'INSERT INTO "{table_name}" ({col_names}) VALUES ({placeholders})'
+        sql = f'INSERT OR REPLACE INTO "{table_name}" ({col_names}) VALUES ({placeholders})'
         # Convertir toutes les lignes en une seule liste
         converted_rows = []
         for row in rows:
@@ -307,7 +416,16 @@ class SQLiteInit:
                     val = bytes(val)
                 converted.append(val)
             converted_rows.append(converted)
-        cursor.executemany(sql, converted_rows)
+        try:
+            cursor.executemany(sql, converted_rows)
+            msg = f"_insert_rows_from_data: {len(rows)} lignes insérées dans {table_name}"
+            _log(msg)
+            print(msg)
+        except Exception as e:
+            msg = f"_insert_rows_from_data: erreur lors de l'insertion dans {table_name} : {e}"
+            _log(msg)
+            print(msg)
+            raise
 
     def read_cursor(self, table: str) -> int:
         conn = db.local_conn
@@ -328,6 +446,32 @@ class SQLiteInit:
             (table, max_rev)
         )
         conn.commit()
+
+    def verify_tables(self, conn: Optional[sqlite3.Connection] = None) -> tuple:
+        """
+        Vérifie que toutes les tables nécessaires existent dans la base SQLite.
+        Retourne (True, []) si toutes les tables existent, sinon (False, [liste des tables manquantes]).
+        """
+        if conn is None:
+            conn = db.local_conn
+        if conn is None:
+            return False, ['Aucune connexion SQLite disponible']
+
+        required_tables = [
+            'session_cache',
+            'sync_cursor',
+            'module_config',
+            'larcauth_evaluation',
+            'larcauth_learnerpei_has_termsubjectpei',
+            'larcauth_learnerdp_has_termsubjectdp',
+        ]
+
+        cursor = conn.cursor()
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        existing_tables = {row[0] for row in cursor.fetchall()}
+
+        missing = [t for t in required_tables if t not in existing_tables]
+        return (len(missing) == 0, missing)
 
 
 sqlite_init = SQLiteInit()

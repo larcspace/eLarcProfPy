@@ -1,133 +1,110 @@
-import psycopg2
-import sqlite3
 import os
-import datetime
+import sys
 import json
-
-# Configuration PostgreSQL
-PG_HOST = "localhost"
-PG_PORT = 5432
-PG_DB = "LarcIntranet"
-PG_USER = "postgres"
-PG_PASSWORD = "postgres"
+import pandas as pd
+from sqlalchemy import create_engine, text
+from common.database import db
 
 # Chemin du fichier SQLite de sortie
 SQLITE_PATH = "elarc.db"
 
-def get_pg_connection():
-    return psycopg2.connect(
-        host=PG_HOST,
-        port=PG_PORT,
-        dbname=PG_DB,
-        user=PG_USER,
-        password=PG_PASSWORD
-    )
+def get_pg_engine():
+    """Retourne un moteur SQLAlchemy pour PostgreSQL."""
+    # Utiliser la connexion déjà établie par db
+    if db.server_conn is not None:
+        # On utilise l'URL de connexion depuis la configuration
+        url = db.get_sqlalchemy_url('IntranetDatabase')
+        return create_engine(url)
+    # Sinon, essayer de se connecter à l'Intranet
+    if db.connect_intranet():
+        url = db.get_sqlalchemy_url('IntranetDatabase')
+        return create_engine(url)
+    # Sinon, essayer le Cloud
+    if db.connect_cloud():
+        url = db.get_sqlalchemy_url('SupabaseDatabase')
+        return create_engine(url)
+    raise Exception("Aucune connexion PostgreSQL disponible")
 
-def get_sqlite_connection():
-    return sqlite3.connect(SQLITE_PATH)
+def get_sqlite_engine():
+    """Retourne un moteur SQLAlchemy pour SQLite."""
+    return create_engine(f"sqlite:///{SQLITE_PATH}")
 
-def export_table(pg_conn, sqlite_conn, table_name):
-    """Exporte une table PostgreSQL vers SQLite."""
-    pg_cursor = pg_conn.cursor()
-    sqlite_cursor = sqlite_conn.cursor()
+def export_table(pg_engine, sqlite_engine, table_name):
+    """Exporte une table PostgreSQL vers SQLite en utilisant Pandas."""
+    try:
+        # Lire la table PostgreSQL dans un DataFrame
+        query = f'SELECT * FROM public."{table_name}"'
+        print(f"DEBUG: Exécution de la requête pour {table_name}")
+        df = pd.read_sql_query(query, pg_engine)
 
-    # Récupérer les colonnes et leurs types
-    pg_cursor.execute(f"""
-        SELECT column_name, data_type
-        FROM information_schema.columns
-        WHERE table_schema = 'public' AND table_name = '{table_name}'
-        ORDER BY ordinal_position
-    """)
-    columns = pg_cursor.fetchall()
+        print(f"DEBUG: {table_name} - DataFrame shape: {df.shape}")
+        print(f"DEBUG: {table_name} - Colonnes: {list(df.columns)}")
+        if not df.empty:
+            print(f"DEBUG: {table_name} - Première ligne: {df.iloc[0].to_dict()}")
 
-    if not columns:
-        print(f"Table {table_name} introuvable, ignorée.")
-        return
+        if df.empty:
+            print(f"Table {table_name} : 0 lignes")
+            return
 
-    # Construire le CREATE TABLE SQLite
-    col_defs = []
-    for col_name, col_type in columns:
-        # Conversion des types PostgreSQL vers SQLite
-        if col_type in ('integer', 'smallint', 'bigint', 'serial', 'bigserial'):
-            sqlite_type = 'INTEGER'
-        elif col_type in ('real', 'double precision', 'numeric', 'float'):
-            sqlite_type = 'REAL'
-        elif col_type in ('boolean',):
-            sqlite_type = 'INTEGER'
-        elif col_type in ('bytea',):
-            sqlite_type = 'BLOB'
-        elif col_type in ('json', 'jsonb'):
-            sqlite_type = 'TEXT'
-        else:
-            sqlite_type = 'TEXT'
-        col_defs.append(f'"{col_name}" {sqlite_type}')
+        # Convertir les colonnes de type datetime en chaînes ISO
+        for col in df.select_dtypes(include=['datetime64', 'datetime64[ns]']).columns:
+            df[col] = df[col].dt.strftime('%Y-%m-%d %H:%M:%S')
 
-    create_sql = f'CREATE TABLE IF NOT EXISTS "{table_name}" ({", ".join(col_defs)})'
-    sqlite_cursor.execute(create_sql)
+        # Convertir les colonnes de type date en chaînes ISO
+        for col in df.select_dtypes(include=['datetime64[ns]']).columns:
+            df[col] = df[col].dt.strftime('%Y-%m-%d')
 
-    # Récupérer les données
-    pg_cursor.execute(f'SELECT * FROM public."{table_name}"')
-    rows = pg_cursor.fetchall()
+        # Convertir les colonnes de type time en chaînes ISO
+        for col in df.select_dtypes(include=['timedelta64[ns]']).columns:
+            df[col] = df[col].apply(lambda x: str(x) if pd.notna(x) else None)
 
-    if not rows:
-        print(f"Table {table_name} : 0 lignes")
-        return
+        # Convertir les colonnes de type json/jsonb en chaînes JSON
+        for col in df.select_dtypes(include=['object']).columns:
+            # Vérifier si la colonne contient des dicts/lists
+            if df[col].apply(lambda x: isinstance(x, (dict, list))).any():
+                df[col] = df[col].apply(lambda x: json.dumps(x) if isinstance(x, (dict, list)) else x)
 
-    # Insérer les données
-    placeholders = ", ".join("?" for _ in columns)
-    col_names = ", ".join(f'"{c[0]}"' for c in columns)
-    insert_sql = f'INSERT INTO "{table_name}" ({col_names}) VALUES ({placeholders})'
+        # Écrire dans SQLite (remplace la table si elle existe)
+        print(f"DEBUG: Écriture de {table_name} dans SQLite...")
+        df.to_sql(
+            name=table_name,
+            con=sqlite_engine,
+            if_exists='replace',
+            index=False,
+            method='multi'  # Insertion en bloc
+        )
 
-    for row in rows:                                                                           
-        # Convertir les types spéciaux (bytea, time, json, etc.)                               
-        converted_row = []                                                                     
-        for val in row:                                                                        
-            if isinstance(val, memoryview):                                                    
-                val = bytes(val)                                                               
-            elif isinstance(val, bytearray):                                                   
-                val = bytes(val)                                                               
-            elif isinstance(val, datetime.time):                                               
-                val = val.isoformat()  # Convertir time en texte                               
-            elif isinstance(val, datetime.date):                                               
-                val = val.isoformat()  # Convertir date en texte                               
-            elif isinstance(val, datetime.datetime):                                           
-                val = val.isoformat()  # Convertir datetime en texte                           
-            elif isinstance(val, (dict, list)):                                                
-                import json                                                                    
-                val = json.dumps(val)  # Convertir jsonb en texte JSON                         
-            elif val is None:                                                                  
-                pass                                                                           
-            converted_row.append(val)                                                          
-        sqlite_cursor.execute(insert_sql, converted_row)                                                           
+        print(f"Table {table_name} : {len(df)} lignes exportées")
 
-    sqlite_conn.commit()
-    print(f"Table {table_name} : {len(rows)} lignes exportées")
+    except Exception as e:
+        print(f"Erreur lors de l'export de {table_name} : {e}")
+        raise
 
 def main():
     # Supprimer l'ancien fichier s'il existe
     if os.path.exists(SQLITE_PATH):
         os.remove(SQLITE_PATH)
 
-    pg_conn = get_pg_connection()
-    sqlite_conn = get_sqlite_connection()
+    pg_engine = get_pg_engine()
+    sqlite_engine = get_sqlite_engine()
 
-    # Lister toutes les tables publiques
-    pg_cursor = pg_conn.cursor()
-    pg_cursor.execute("""
-        SELECT table_name
-        FROM information_schema.tables
-        WHERE table_schema = 'public' AND table_type = 'BASE TABLE'
-        ORDER BY table_name
-    """)
-    tables = [row[0] for row in pg_cursor.fetchall()]
+    # Lister toutes les tables publiques via SQLAlchemy
+    with pg_engine.connect() as conn:
+        result = conn.execute(text("""
+            SELECT table_name
+            FROM information_schema.tables
+            WHERE table_schema = 'public' AND table_type = 'BASE TABLE'
+            ORDER BY table_name
+        """))
+        tables = [row[0] for row in result]
 
     print(f"Tables trouvées : {len(tables)}")
 
     for table in tables:
-        export_table(pg_conn, sqlite_conn, table)
+        export_table(pg_engine, sqlite_engine, table)
 
-    pg_conn.close()
-    sqlite_conn.close()
+    pg_engine.dispose()
+    sqlite_engine.dispose()
     print(f"Export terminé. Fichier créé : {SQLITE_PATH}")
 
 if __name__ == "__main__":

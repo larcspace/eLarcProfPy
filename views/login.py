@@ -339,8 +339,16 @@ class LoginWindow(QMainWindow):
         self._check_network()
         # Mettre à jour les indicateurs immédiatement
         self._update_indicators(intra_ok, internet_ok)
+        # Forcer la reconnexion à la base locale (même si déjà connectée)
+        try:
+            sqlite_init.init()
+        except Exception as e:
+            self._log(f"Erreur d'initialisation de la base locale : {e}")
         # Mettre à jour l'indicateur en bas selon l'état du module
-        self._update_status_bar_from_module_config()
+        try:
+            self._update_status_bar_from_module_config()
+        except Exception as e:
+            self._log(f"Erreur lors de la mise à jour de la barre d'état : {e}")
 
     def hideEvent(self, event):
         """Appelé lorsque la fenêtre est masquée."""
@@ -541,7 +549,8 @@ class LoginWindow(QMainWindow):
             )
 
             # Mode 4 : télécharger toutes les données du professeur pour le trimestre en cours
-            self._show_confirmation_dialog(res, mode)
+            # Appeler directement _execute_steps sans boîte de dialogue
+            self._execute_steps(res, mode, None, infos)
             return
 
         # Pour le mode PIN, vérifier si la connexion serveur est disponible
@@ -569,7 +578,7 @@ class LoginWindow(QMainWindow):
             )
 
             # Mode 4 : télécharger toutes les données du professeur pour le trimestre en cours
-            self._show_confirmation_dialog(res, mode)
+            self._show_confirmation_dialog(res, mode, infos)
             return
 
         # Pour le mode PIN sans connexion serveur, initialiser module_config avec les informations de la session
@@ -601,13 +610,13 @@ class LoginWindow(QMainWindow):
             )
 
             # Mode 4 : télécharger toutes les données du professeur pour le trimestre en cours
-            self._show_confirmation_dialog(res, mode)
+            self._show_confirmation_dialog(res, mode, infos)
             return
 
         self._apply_session(res, mode)
 
 
-    def _show_confirmation_dialog(self, res: AuthResult, mode: ConnMode) -> None:
+    def _show_confirmation_dialog(self, res: AuthResult, mode: ConnMode, infos: dict) -> None:
         """Affiche une boîte de dialogue listant les étapes à effectuer."""
         from PySide6.QtWidgets import QDialog, QDialogButtonBox, QVBoxLayout, QLabel
 
@@ -636,9 +645,11 @@ class LoginWindow(QMainWindow):
 
     def _execute_steps(self, res: AuthResult, mode: ConnMode, dlg, infos: dict) -> None:
         """Exécute les étapes une par une avec processEvents."""
-        dlg.accept()  # ferme la boîte de dialogue
+        if dlg is not None:
+            dlg.accept()  # ferme la boîte de dialogue
         self._set_busy(True)
         self._log('Début du téléchargement des données du professeur…')
+        self._log(f"Infos reçues : user_id={infos.get('user_id')}, trimestre={infos.get('trimestre_courant')}")
         QApplication.processEvents()
 
         # Initialiser la base SQLite (créer les tables si nécessaire)
@@ -647,48 +658,58 @@ class LoginWindow(QMainWindow):
             self._set_busy(False)
             return
 
-        # Créer une connexion SQLite dédiée pour ce thread
-        import sqlite3
-        import os
-        db_path = os.path.normpath(os.path.join(
-            os.path.dirname(os.path.abspath(__file__)), '..', 'elarc.db'
-        ))
-        self._temp_conn = sqlite3.connect(db_path, check_same_thread=False)
-        self._temp_conn.row_factory = sqlite3.Row
-        self._temp_conn.execute('PRAGMA journal_mode=WAL')
+        # Utiliser la connexion SQLite déjà établie par init()
+        self._temp_conn = db.local_conn
 
-        # Lancer le téléchargement dans un thread séparé
-        self._data_thread = _Worker(
-            sqlite_init.take_teacher_data,
-            infos,  # passer infos directement
-            None,  # log_fn sera géré par le thread via QMetaObject
-            self._temp_conn,
-            None,  # conn_pg (None pour utiliser db.server_conn)
-            parent=self
-        )
-        self._data_thread.done.connect(
-            lambda result: self._on_data_finished(result, res, mode)
-        )
-        # Modifier _on_data_finished pour accepter le tuple
-        self._data_thread.start()
+        # Afficher un spinner (barre de progression indéterminée)
+        self._show_spinner(True)
+        QApplication.processEvents()
 
-    def _on_data_finished(self, result, res: AuthResult, mode: ConnMode) -> None:
-        """Appelé lorsque le thread de téléchargement est terminé."""
-        self._set_busy(False)
-        # Fermer la connexion temporaire
-        if hasattr(self, '_temp_conn') and self._temp_conn:
-            try:
-                self._temp_conn.close()
-            except Exception:
-                pass
+        # Exécuter le téléchargement de manière synchrone
+        try:
+            ok, err_msg = sqlite_init.take_teacher_data(
+                infos,
+                self._log,
+                self._temp_conn,
+                None  # conn_pg (None pour utiliser db.server_conn)
+            )
+        except Exception as e:
+            self._log(f"Exception dans take_teacher_data : {e}")
+            self._show_spinner(False)
+            self._set_busy(False)
             self._temp_conn = None
-        ok, err_msg = result if isinstance(result, tuple) else (result, '')
+            self._show_error(f'Erreur lors du téléchargement : {e}')
+            return
+
+        # Masquer le spinner
+        self._show_spinner(False)
+
+        self._set_busy(False)
+        self._temp_conn = None
+
+        self._log(f"Résultat du téléchargement : ok={ok}, msg={err_msg}")
         if not ok:
             self._show_error(f'Échec du téléchargement des données du professeur : {err_msg}')
             return
         self._log('Téléchargement terminé avec succès.')
+        # Vérifier les comptes dans la base locale
+        try:
+            conn = db.local_conn
+            if conn:
+                cur = conn.cursor()
+                cur.execute("SELECT COUNT(*) FROM larcauth_evaluation")
+                count_eval = cur.fetchone()[0]
+                cur.execute("SELECT COUNT(*) FROM larcauth_learnerpei_has_termsubjectpei")
+                count_pei = cur.fetchone()[0]
+                cur.execute("SELECT COUNT(*) FROM larcauth_learnerdp_has_termsubjectdp")
+                count_dp = cur.fetchone()[0]
+                self._log(f"Comptes après téléchargement : eval={count_eval}, pei={count_pei}, dp={count_dp}")
+        except Exception as e:
+            self._log(f"Erreur lors de la vérification des comptes : {e}")
         # Appliquer la session maintenant que les données sont prêtes
         self._apply_session(res, mode)
+
+    # Supprimer _on_data_finished car le traitement est maintenant synchrone dans _execute_steps
 
     def _apply_session(self, res: AuthResult, mode: ConnMode) -> None:
         session.user_id           = res.user_id
@@ -832,6 +853,27 @@ class LoginWindow(QMainWindow):
                     shutil.copytree(s, d, dirs_exist_ok=True)
                 else:
                     shutil.copy2(s, d)
+            # Vérifier que config.ini a été copié
+            dest_cfg = os.path.join(dest, 'config.ini')
+            if not os.path.exists(dest_cfg):
+                # Créer un fichier config.ini par défaut
+                self._log("config.ini introuvable dans la source, création d'un fichier par défaut.")
+                with open(dest_cfg, 'w', encoding='utf-8') as f:
+                    f.write("""[IntranetDatabase]
+Host = 127.0.0.1
+Port = 5432
+DB = NewLarcDB
+User = postgres
+Pass = postgres
+
+[SupabaseDatabase]
+Host = db.xxxxxxxxxxxx.supabase.co
+Port = 5432
+DB = postgres
+User = postgres
+Pass = votre_mot_de_passe_supabase
+""")
+                self._log(f"config.ini par défaut créé : {dest_cfg}")
             # Copier elarc.db s'il existe
             src_db = os.path.normpath(os.path.join(src, 'elarc.db'))
             if os.path.exists(src_db):
@@ -840,6 +882,38 @@ class LoginWindow(QMainWindow):
             else:
                 self._log("elarc.db introuvable dans la source.")
             self._log("Copie terminée.")
+
+            # Initialiser la base locale dans le dossier de destination
+            dest_db = os.path.join(dest, 'elarc.db')
+            if not sqlite_init.init(dest_db):
+                self._show_error('Impossible d\'initialiser la base locale dans le dossier de destination.')
+                return
+
+            # Vérifier que toutes les tables nécessaires existent
+            ok, missing = sqlite_init.verify_tables()
+            if not ok:
+                self._log(f"ATTENTION : Tables manquantes dans la base locale : {missing}")
+                # On continue quand même, mais on log l'avertissement
+
+            # Initialiser module_config avec les informations du professeur
+            sqlite_init.init_module_config(
+                annee_scolaire=infos['annee_scolaire'],
+                trimestre_courant=infos['trimestre_courant'],
+                nom_professeur=f"{infos['first_name']} {infos['last_name']}",
+                email_professeur=email
+            )
+
+            # Sauvegarder la session
+            from common.session import AuthResult, UserRole
+            res = AuthResult(
+                user_id=infos['user_id'],
+                email=email,
+                full_name=f"{infos['first_name']} {infos['last_name']}",
+                role=UserRole.PROF,
+                term_id=infos['trimestre_courant'],
+                term_label=infos['trimestre_label']
+            )
+            sqlite_init.save_session(res)
 
             # Write instance-specific config stub
             self._show_progress('Écriture du fichier instance.ini…')
@@ -925,6 +999,23 @@ class LoginWindow(QMainWindow):
         self._err_lbl.show()
         self._log(msg)
 
+    def _show_spinner(self, visible: bool) -> None:
+        """Affiche ou masque une barre de progression indéterminée."""
+        if not hasattr(self, '_spinner'):
+            from PySide6.QtWidgets import QProgressBar
+            self._spinner = QProgressBar()
+            self._spinner.setRange(0, 0)  # indéterminé
+            self._spinner.setFixedHeight(20)
+            self._spinner.setStyleSheet(
+                'QProgressBar { border: 1px solid #bdc3c7; border-radius: 4px; '
+                'background: #ecf0f1; text-align: center; }'
+                'QProgressBar::chunk { background: #3498db; }'
+            )
+            # Insérer après l'indicateur principal
+            layout = self.centralWidget().layout()
+            layout.insertWidget(layout.indexOf(self._bottom_indicator), self._spinner)
+        self._spinner.setVisible(visible)
+
     def _hide_error(self) -> None:
         self._err_lbl.hide()
 
@@ -937,6 +1028,10 @@ class LoginWindow(QMainWindow):
             if conn is None:
                 return None
             cur = conn.cursor()
+            # Vérifier que la table existe
+            cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='module_config'")
+            if not cur.fetchone():
+                return None
             cur.execute("SELECT nom_professeur, annee_scolaire, trimestre_courant FROM module_config LIMIT 1")
             row = cur.fetchone()
             if row and row[0]:
@@ -945,34 +1040,77 @@ class LoginWindow(QMainWindow):
                     'annee_scolaire': row[1],
                     'trimestre_courant': row[2]
                 }
-        except Exception:
-            pass
+        except Exception as e:
+            self._log(f"Erreur dans _get_module_config : {e}")
         return None
+
+    def _get_module_config_dates(self) -> dict:
+        """Lit les dates de création et de dernière synchronisation depuis module_config.
+        Retourne un dict avec 'date_creation_module' et 'derniere_synchronisation'."""
+        try:
+            conn = db.local_conn
+            if conn is None:
+                return {'date_creation_module': '', 'derniere_synchronisation': ''}
+            cur = conn.cursor()
+            # Vérifier que la table existe
+            cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='module_config'")
+            if not cur.fetchone():
+                return {'date_creation_module': '', 'derniere_synchronisation': ''}
+            cur.execute("SELECT date_creation_module, derniere_synchronisation FROM module_config LIMIT 1")
+            row = cur.fetchone()
+            if row:
+                return {
+                    'date_creation_module': row[0] or '',
+                    'derniere_synchronisation': row[1] or ''
+                }
+        except Exception as e:
+            self._log(f"Erreur dans _get_module_config_dates : {e}")
+        return {'date_creation_module': '', 'derniere_synchronisation': ''}
 
     def _update_status_bar_from_module_config(self) -> None:
         """Met à jour l'indicateur en bas en lisant la configuration du module."""
-        config = self._get_module_config()
-        if config:
-            prof_name = config['nom_professeur']
-            # Déterminer le mode de connexion actuel
-            from common.session import session
-            if session.is_authenticated:
-                mode = session.conn_mode
+        try:
+            # Vérifier que la base locale est connectée
+            if db.local_conn is None:
+                self._bottom_indicator.setText("Module eLarcProf non instanciée")
+                self._bottom_indicator.setStyleSheet(
+                    'color: #2c3e50; font-size: 16px; font-weight: bold;'
+                )
+                if hasattr(self, '_bottom_dates_label'):
+                    self._bottom_dates_label.setText('')
+                return
+
+            config = self._get_module_config()
+            if config:
+                prof_name = config['nom_professeur']
+                # Déterminer le mode de connexion actuel
+                from common.session import session
+                if session.is_authenticated:
+                    mode = session.conn_mode
+                else:
+                    mode = ConnMode.OFFLINE
+                self._update_status_bar(
+                    AuthResult(
+                        user_id=0,
+                        email='',
+                        full_name=prof_name,
+                        role=UserRole.PROF,
+                        term_id=config['trimestre_courant'],
+                        term_label=''
+                    ),
+                    mode
+                )
             else:
-                mode = ConnMode.OFFLINE
-            self._update_status_bar(
-                AuthResult(
-                    user_id=0,
-                    email='',
-                    full_name=prof_name,
-                    role=UserRole.PROF,
-                    term_id=config['trimestre_courant'],
-                    term_label=''
-                ),
-                mode
-            )
-        else:
-            # Module non instancié
+                # Module non instancié
+                self._bottom_indicator.setText("Module eLarcProf non instanciée")
+                self._bottom_indicator.setStyleSheet(
+                    'color: #2c3e50; font-size: 16px; font-weight: bold;'
+                )
+                # Supprimer le label des dates s'il existe
+                if hasattr(self, '_bottom_dates_label'):
+                    self._bottom_dates_label.setText('')
+        except Exception as e:
+            self._log(f"Erreur dans _update_status_bar_from_module_config : {e}")
             self._bottom_indicator.setText("Module eLarcProf non instanciée")
             self._bottom_indicator.setStyleSheet(
                 'color: #2c3e50; font-size: 16px; font-weight: bold;'
@@ -983,23 +1121,47 @@ class LoginWindow(QMainWindow):
         # Déterminer le nom du professeur
         prof_name = res.full_name if res.full_name else self._get_module_config()['nom_professeur'] if self._get_module_config() else ''
 
+        # Récupérer les dates depuis module_config
+        dates = self._get_module_config_dates()
+        creation_date = dates.get('date_creation_module', '')
+        sync_date = dates.get('derniere_synchronisation', '')
+
         if mode == ConnMode.INTRANET:
-            text = f"Module eLarcProf de {prof_name} Connecté à l'Intranet"
+            title = f"Module de {prof_name} : Connecté à l'Intranet"
             color = "#27ae60"  # vert
         elif mode == ConnMode.CLOUD:
-            text = f"Module eLarcProf de {prof_name} connecté au Cloud"
+            title = f"Module de {prof_name} : connecté au Cloud"
             color = "#27ae60"  # vert
         else:
             # mode == ConnMode.OFFLINE
             if prof_name:
-                text = f"Module eLarcProf de {prof_name} Non Connecté"
+                title = f"Module de {prof_name} : Non connecté"
             else:
-                text = "Module eLarcProf non instanciée"
+                title = "Module eLarcProf non instanciée"
             color = "#2c3e50"  # noir
-        self._bottom_indicator.setText(text)
+
+        # Mettre à jour le label principal
+        self._bottom_indicator.setText(title)
         self._bottom_indicator.setStyleSheet(
             f'color: {color}; font-size: 16px; font-weight: bold;'
         )
+
+        # Mettre à jour le label des dates (créer s'il n'existe pas)
+        if not hasattr(self, '_bottom_dates_label'):
+            self._bottom_dates_label = QLabel()
+            self._bottom_dates_label.setAlignment(Qt.AlignCenter)
+            self._bottom_dates_label.setStyleSheet(
+                'color: #7f8c8d; font-size: 11px;'
+            )
+            # Insérer après l'indicateur principal
+            layout = self.centralWidget().layout()
+            layout.insertWidget(layout.indexOf(self._bottom_indicator) + 1, self._bottom_dates_label)
+
+        if creation_date or sync_date:
+            dates_text = f"Création : {creation_date}  |  Dernière synchro : {sync_date}"
+        else:
+            dates_text = ""
+        self._bottom_dates_label.setText(dates_text)
 
     def _open_main_window(self, res: AuthResult) -> None:
         from PySide6.QtWidgets import QDialog, QDialogButtonBox
